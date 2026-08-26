@@ -304,9 +304,9 @@ def lancer_laboratoire_profilage(db):
     print("=======================================================================")
 
     try:
-        lgbm_model = joblib.load("Data/Modeles_Sauvegardes/Titan_LightGBM.pkl")
-        xgb_model = joblib.load("Data/Modeles_Sauvegardes/Titan_XGBoost.pkl")
-        label_encoder = joblib.load("Data/Modeles_Sauvegardes/LabelEncoder_FTR.pkl")
+        lgbm_model = joblib.load("Modeles_Sauvegardes/Titan_LightGBM.pkl")
+        xgb_model = joblib.load("Modeles_Sauvegardes/Titan_XGBoost.pkl")
+        label_encoder = joblib.load("Modeles_Sauvegardes/LabelEncoder_FTR.pkl")
     except Exception as e:
         print(f"❌ Erreur critique au chargement des modèles : {e}")
         return
