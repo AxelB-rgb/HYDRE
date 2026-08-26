@@ -11,8 +11,9 @@ progression — aucune de ces routes de lecture ne persiste de donnée).
 """
 import itertools
 import math
+import time
 import uuid
-from datetime import datetime, time
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
