@@ -169,6 +169,48 @@ def _calculer_scores_groupe(groupe):
         ) * 100
         r["score"] = round(score, 1)
 
+def _calculer_finances_dict():
+    config = col_parametres.find_one({"type": "bankroll"})
+    if not config:
+        return {
+            "initialise": False, "total": 0, "engage": 0, "disponible": 0,
+            "freebets": {"total_acquis": 0, "engage": 0, "disponible": 0}
+        }
+
+    capital_depart = float(config.get("capital", 0) or 0)
+    freebets_credit_total = float(config.get("freebets_total_acquis", 0) or 0)
+
+    # 🆕 Un ticket ANNULÉ ne doit générer ni profit ni perte, et ne doit jamais être compté
+    # comme "réglé" : on l'exclut explicitement du P&L (requirement #6 / #3).
+    paris_clotures = list(col_paris.find({"Resultat_Final": {"$in": list(RESULTATS_REGLES)}}))
+    pnl_total = sum(_pnl_cash_pari(p) for p in paris_clotures)
+    bankroll_totale = capital_depart + pnl_total
+
+    # "En cours" = pas encore réglé du tout (ni gagné/perdu/cashout, ni annulé).
+    paris_en_cours = list(col_paris.find({"Resultat_Final": {"$exists": False}}))
+    capital_engage = sum(float(p.get("mise", 0) or 0) for p in paris_en_cours if p.get("type_fond", "CASH") == "CASH")
+    freebets_engage = sum(float(p.get("mise", 0) or 0) for p in paris_en_cours if p.get("type_fond", "CASH") == "FREEBET")
+
+    # 🆕 FB ACQUIS / FB ENGAGÉ / FB DISPO (voir §2 et §3 du cahier des charges) :
+    # - FB ACQUIS ne bouge PAS quand un ticket est simplement bloqué/engagé ;
+    # - FB ACQUIS ne diminue QUE quand un ticket est définitivement réglé (GAGNÉ/PERDU/CASHOUT) ;
+    # - Un ticket ANNULÉ restitue intégralement la freebet (n'affecte jamais FB ACQUIS).
+    tous_paris_freebet_regles = list(col_paris.find({"type_fond": "FREEBET", "Resultat_Final": {"$in": list(RESULTATS_REGLES)}}))
+    freebets_consommees_definitivement = sum(float(p.get("mise", 0) or 0) for p in tous_paris_freebet_regles)
+    freebets_acquis_restant = freebets_credit_total - freebets_consommees_definitivement
+    freebets_disponible = freebets_acquis_restant - freebets_engage
+
+    return {
+        "initialise": True,
+        "total": round(bankroll_totale, 2),
+        "engage": round(capital_engage, 2),
+        "disponible": round(bankroll_totale - capital_engage, 2),
+        "freebets": {
+            "total_acquis": round(freebets_acquis_restant, 2),
+            "engage": round(freebets_engage, 2),
+            "disponible": round(freebets_disponible, 2)
+        }
+    }
 
 def _snapshot_score_hydre_pour_match(doc):
     """🆕 CORRECTIF STOCKAGE (§1) : calcule le VRAI Score Hydre pour un match isolé, au moment présent —
