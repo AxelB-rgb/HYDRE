@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends
 from backend.auth import require_any_role
 from backend.config import col_fixtures, col_historique, col_paris, col_parametres
 from backend.bankroll import _pnl_cash_pari
+from backend.utils import _debut_saison_actuelle
 
 router = APIRouter()
 
