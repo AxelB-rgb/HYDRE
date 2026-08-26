@@ -169,6 +169,21 @@ def _calculer_scores_groupe(groupe):
         ) * 100
         r["score"] = round(score, 1)
 
+def _pnl_cash_pari(p):
+    """🆕 P&L exprimé en CASH RÉEL uniquement. Pour un pari FREEBET, la mise n'a jamais été
+    de l'argent réellement possédé : sa perte ne doit donc JAMAIS réduire la bankroll cash
+    (perte cash = 0 €), et son gain ne doit pas être diminué par cette mise "virtuelle" (le
+    profit cash = le montant de retour réellement perçu, en intégralité). Pour un pari CASH
+    (mise réellement engagée, y compris les paris sans type_fond explicite — anciens paris,
+    toujours CASH par défaut), le P&L reste retour - mise, comme avant."""
+    retour = float(p.get("Montant_Retour", 0) or 0)
+    mise = float(p.get("mise", 0) or 0)
+    if p.get("Resultat_Final") == "ANNULE":
+        return 0.0
+    if p.get("type_fond", "CASH") == "FREEBET":
+        return retour
+    return retour - mise
+
 def _calculer_finances_dict():
     config = col_parametres.find_one({"type": "bankroll"})
     if not config:
