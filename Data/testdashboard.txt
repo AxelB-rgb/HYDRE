@@ -1,0 +1,27 @@
+[
+  {
+    "id_match": "TEST1", "home_team": "Arsenal", "away_team": "Chelsea", "date": "2026-04-01 21:00",
+    "choix_pari": "H", "cote_choisie": 1.95, "mise": 15.0, "Resultat_Final": "GAGNE", "Montant_Retour": 29.25,
+    "Date_Engagement": "2026-04-01 10:00:00", "Date_Cloture": "2026-04-01 23:00:00"
+  },
+  {
+    "id_match": "TEST2", "home_team": "Lille", "away_team": "Lyon", "date": "2026-04-02 20:45",
+    "choix_pari": "D", "cote_choisie": 3.40, "mise": 15.0, "Resultat_Final": "PERDU", "Montant_Retour": 0.0,
+    "Date_Engagement": "2026-04-02 09:00:00", "Date_Cloture": "2026-04-02 23:00:00"
+  },
+  {
+    "id_match": "TEST3", "home_team": "Real Madrid", "away_team": "Sevilla", "date": "2026-04-03 16:00",
+    "choix_pari": "H", "cote_choisie": 1.50, "mise": 20.0, "Resultat_Final": "GAGNE", "Montant_Retour": 30.0,
+    "Date_Engagement": "2026-04-03 11:00:00", "Date_Cloture": "2026-04-03 18:00:00"
+  },
+  {
+    "id_match": "TEST4", "home_team": "Juventus", "away_team": "Napoli", "date": "2026-04-04 20:45",
+    "choix_pari": "A", "cote_choisie": 2.80, "mise": 15.0, "Resultat_Final": "GAGNE", "Montant_Retour": 42.0,
+    "Date_Engagement": "2026-04-04 14:00:00", "Date_Cloture": "2026-04-04 23:00:00"
+  },
+  {
+    "id_match": "TEST5", "home_team": "Bayern", "away_team": "Dortmund", "date": "2026-04-05 15:30",
+    "choix_pari": "1X", "cote_choisie": 1.25, "mise": 25.0, "Resultat_Final": "CASHOUT", "Montant_Retour": 20.0,
+    "Date_Engagement": "2026-04-05 10:00:00", "Date_Cloture": "2026-04-05 17:30:00"
+  }
+]
