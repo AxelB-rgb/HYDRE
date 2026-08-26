@@ -169,6 +169,13 @@ def _calculer_scores_groupe(groupe):
         ) * 100
         r["score"] = round(score, 1)
 
+# 🆕 CORRECTIF STOCKAGE (§3/§6) : aucune configuration explicite de "saison actuelle" n'existe ailleurs
+# dans ce fichier — convention championnats européens (début 1er juillet), à ajuster si besoin.
+def _debut_saison_actuelle():
+    now = datetime.now()
+    annee_debut = now.year if now.month >= 7 else now.year - 1
+    return f"{annee_debut}-07-01"
+
 def _pnl_cash_pari(p):
     """🆕 P&L exprimé en CASH RÉEL uniquement. Pour un pari FREEBET, la mise n'a jamais été
     de l'argent réellement possédé : sa perte ne doit donc JAMAIS réduire la bankroll cash
