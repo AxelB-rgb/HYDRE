@@ -22,7 +22,7 @@ from backend.hydre_engine import (
 )
 from backend.bankroll import _calculer_finances_dict
 
-from HYDRE.backend.utils import SEUIL_GEL_COTE_HEURES
+from backend.utils import SEUIL_GEL_COTE_HEURES
 
 router = APIRouter()
 

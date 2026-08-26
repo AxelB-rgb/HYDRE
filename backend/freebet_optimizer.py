@@ -36,7 +36,7 @@ from backend.utils import _cote_est_verrouillee
 from backend.hydre_engine import _scanner_marche_data
 from backend.bankroll import _calculer_finances_dict
 
-from HYDRE.backend.hydre_engine import normaliser
+from backend.hydre_engine import normaliser
 
 router = APIRouter()
 
