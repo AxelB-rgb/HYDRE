@@ -11,6 +11,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 
+RESULTATS_REGLES = ("GAGNE", "PERDU", "CASHOUT")  # règlements définitifs (hors ANNULÉ)
+
 from backend.config import (
     col_fixtures, col_paris, col_profilage, col_parametres,
     lgbm_model, xgb_model, label_encoder,
@@ -139,9 +141,6 @@ def normaliser(valeur, mini, maxi):
 # ==========================================
 # 🆕 GESTION FINANCIÈRE CENTRALISÉE (CASH + FREEBETS + MOUVEMENTS)
 # ==========================================
-
-RESULTATS_REGLES = ("GAGNE", "PERDU", "CASHOUT")  # règlements définitifs (hors ANNULÉ)
-
 
 def _calculer_scores_groupe(groupe):
     """🔒 Formule INCHANGÉE du Scanner de Marché (PONDERATION_SCORE) — calcule un score relatif au
