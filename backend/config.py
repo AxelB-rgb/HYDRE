@@ -90,12 +90,12 @@ FREEBET_TOP_N_PAR_TAILLE = 25
 # sélections (0.17) ; la taille/complexité pèse volontairement peu (0.08) et est normalisée
 # de façon relative (voir taille_score) pour ne jamais double-pénaliser les combinés longs.
 PONDERATION_SCORE_FREEBET = {
-    "proba": 0.25,
+    "proba": 0.30,
     "ev": 0.25,
     "edge": 0.15,
     "qualite_selections": 0.20,
-    "cote": 0.10,
-    "taille": 0.05,    # complexité (nombre de jambes), pénalité douce et relative
+    "cote": 0.05,
+    "taille": 0.05,
 }
 
 # Niveau de risque d'un combiné, basé sur sa probabilité combinée (%) — purement informatif,
