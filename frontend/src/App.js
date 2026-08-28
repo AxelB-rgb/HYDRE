@@ -95,6 +95,46 @@ function App() {
     'X-Hydre-Token': token
   });
 
+  // 🆕 ATTENTE DU DÉMARRAGE DU SERVEUR — le backend (Render, cold start) peut mettre du
+  // temps à répondre au tout premier appel. On vérifie sa disponibilité via /health (route
+  // publique, sans authentification) avant d'afficher quoi que ce soit d'autre, pour éviter
+  // d'exposer des erreurs réseau trompeuses ("Accès Refusé", etc.) pendant le réveil du serveur.
+  const [serveurPret, setServeurPret] = useState(false);
+  const [serveurStatutMsg, setServeurStatutMsg] = useState("Connexion au serveur...");
+
+  useEffect(() => {
+    let annule = false;
+    let interval;
+    let tentative = 0;
+
+    const verifier = () => {
+      tentative += 1;
+      fetch(`${API_URL}/health`)
+        .then(res => {
+          if (res.ok && !annule) {
+            setServeurPret(true);
+            if (interval) clearInterval(interval);
+          } else if (!annule) {
+            setServeurStatutMsg("⏳ Le serveur démarre encore, merci de patienter...");
+          }
+        })
+        .catch(() => {
+          if (!annule) {
+            setServeurStatutMsg(
+              tentative <= 1
+                ? "⏳ Démarrage du serveur en cours (cela peut prendre jusqu'à une minute)..."
+                : "⏳ Le serveur démarre encore, merci de patienter..."
+            );
+          }
+        });
+    };
+
+    verifier();
+    interval = setInterval(verifier, 3000);
+    return () => { annule = true; if (interval) clearInterval(interval); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const verifierMotDePasse = async (e) => {
     e.preventDefault();
     setErreurConnexion("");
@@ -121,6 +161,7 @@ function App() {
   const [matchs, setMatchs] = useState([]);
   const [cotesActuelles, setCotesActuelles] = useState({});
   const [resultat, setResultat] = useState(null);
+  const [matriceLectureSeule, setMatriceLectureSeule] = useState(false);
   const [loadingId, setLoadingId] = useState(null);
   const [activeTab, setActiveTab] = useState('A_REMPLIR');
   const [expandedId, setExpandedId] = useState(null);
@@ -630,8 +671,34 @@ function App() {
       const response = await fetch(`${API_URL}/analyser`, { method: 'POST', headers: getHeaders(), body: JSON.stringify(payload) });
       const data = await response.json();
       setResultat({ ...data, matchObj: match });
+      setMatriceLectureSeule(false);
       setChoixPari(""); setCoteDC(""); setTypeFond("CASH"); setCoteReelleOverride(""); chargerDonneesTrading(); chargerScanner();
     } catch (error) { alert("Erreur de connexion."); }
+    setLoadingId(null);
+  };
+
+  // 🆕 MATRICE DE TIR POUR LE VIEWER (lecture seule) — consulte la dernière Matrice de Tir
+  // déjà générée par le MASTER pour ce match (persistée côté backend lors de /analyser),
+  // sans jamais déclencher de nouvelle analyse ni modifier quoi que ce soit. Utilisée à la
+  // fois pour un match encore en cours d'analyse (PRÊT/ANALYSÉ) et pour un pari déjà
+  // bloqué/validé (JOUE), pour les paris simples comme pour les combinés Freebet (dont le
+  // détail est affiché séparément, voir le tableau des sélections dans l'onglet PARIS JOUÉS).
+  const voirMatrice = async (match) => {
+    if (!estViewer) { analyserMatch(match); return; }
+    setLoadingId(match.id);
+    try {
+      const res = await fetch(`${API_URL}/matrice_tir/${encodeURIComponent(match.id)}`, { headers: getHeaders() });
+      if (!res.ok) {
+        alert("Aucune Matrice de Tir n'a encore été générée par le MASTER pour ce match.");
+        setLoadingId(null);
+        return;
+      }
+      const data = await res.json();
+      setResultat({ ...data, matchObj: match });
+      setMatriceLectureSeule(true);
+    } catch (error) {
+      alert("Erreur de connexion.");
+    }
     setLoadingId(null);
   };
 
@@ -1196,7 +1263,17 @@ function App() {
     if (dashDateFin) matchsAnalysesListe = matchsAnalysesListe.filter(a => a.date <= dashDateFin);
     if (dashFiltreLigue) matchsAnalysesListe = matchsAnalysesListe.filter(a => (a.div || "Inconnu") === dashFiltreLigue);
     const matchsAnalyses = matchsAnalysesListe.length;
-    const matchsSelectionnes = historyStats.length;
+    // 🆕 TAUX DE SÉLECTION DYNAMIQUE : "matchs sélectionnés" doit refléter TOUS les paris
+    // réellement joués/validés (simples ET freebets/combinés), qu'ils soient déjà réglés
+    // (historyStats, qui exclut déjà les ANNULÉS ci-dessus) OU encore en cours (paris_en_cours,
+    // fourni par le backend — Resultat_Final pas encore renseigné, simples et combinés
+    // confondus). Filtré par les mêmes période/ligue que le reste du Dashboard, sans toucher
+    // à la logique de sélection HYDRE, aux scores, edges ou seuils.
+    let parisEnCoursListe = dashboardData.paris_en_cours || [];
+    if (dashDateDebut) parisEnCoursListe = parisEnCoursListe.filter(a => a.date >= dashDateDebut);
+    if (dashDateFin) parisEnCoursListe = parisEnCoursListe.filter(a => a.date <= dashDateFin);
+    if (dashFiltreLigue) parisEnCoursListe = parisEnCoursListe.filter(a => (a.div || "Inconnu") === dashFiltreLigue);
+    const matchsSelectionnes = historyStats.length + parisEnCoursListe.length;
     const tauxSelection = matchsAnalyses > 0 ? (matchsSelectionnes / matchsAnalyses) * 100 : null;
 
     return {
@@ -1384,6 +1461,15 @@ function App() {
     if (sortConfig[table].key !== key) return <span style={{color: '#444', marginLeft: '5px'}}>↕</span>;
     return sortConfig[table].dir === 'asc' ? <span style={{color: '#00ffcc', marginLeft: '5px'}}>▲</span> : <span style={{color: '#00ffcc', marginLeft: '5px'}}>▼</span>;
   };
+
+  if (!serveurPret) {
+    return (
+      <div style={{ backgroundColor: '#000', height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', color: '#00ffcc', fontFamily: 'monospace' }}>
+        <h1 style={{ fontSize: '1.8rem', marginBottom: '15px', letterSpacing: '3px' }}>⏳ DÉMARRAGE DU SERVEUR</h1>
+        <p style={{ color: '#888', maxWidth: '420px', textAlign: 'center', padding: '0 20px' }}>{serveurStatutMsg}</p>
+      </div>
+    );
+  }
 
   if (!estConnecte) {
     return (
@@ -2322,7 +2408,7 @@ function App() {
           {resultat && (
              <div style={{ maxWidth: '900px', margin: '0 auto 30px auto' }}>
                 <div style={{...resultatStyle, margin: '0 0 20px 0'}}>
-                  <h2 style={{ color: '#00ffcc', borderBottom: '1px solid #333', paddingBottom: '10px' }}>✅ MATRICE DE TIR : {resultat.Match} <span style={{fontSize: '0.8rem', color: '#888'}}>({resultat.matchObj.div})</span></h2>
+                  <h2 style={{ color: '#00ffcc', borderBottom: '1px solid #333', paddingBottom: '10px' }}>✅ MATRICE DE TIR : {resultat.Match} <span style={{fontSize: '0.8rem', color: '#888'}}>({resultat.matchObj.div})</span>{matriceLectureSeule && <span style={{ fontSize: '0.75rem', color: '#ffcc00', border: '1px solid #ffcc00', padding: '3px 8px', borderRadius: '4px', marginLeft: '10px', verticalAlign: 'middle' }}>👁️ LECTURE SEULE{resultat._genere_le ? ` — générée le ${resultat._genere_le}` : ''}</span>}</h2>
 
                   <div style={{ display: 'flex', gap: '20px', marginTop: '20px' }}>
                     <div style={{ flex: 1, backgroundColor: '#1e1e1e', padding: '15px', borderRadius: '5px' }}>
@@ -2401,7 +2487,9 @@ function App() {
                     <p style={{ color: '#666', fontSize: '0.8rem', marginTop: '10px', marginBottom: 0 }}>ℹ️ Ce comité est l'ancienne Matrice 3D historique — purement informatif. La décision Sélectionné/Potable/Non Conforme est désormais prise par le Scanner de Marché (proba &gt; 45%, cote 1.00–3.00, edge &gt; 0).</p>
                   </div>
 
-                  {resultat.matchObj.statut !== 'JOUE' ? (
+                  {matriceLectureSeule ? (
+                    <div style={{ backgroundColor: '#1a1a1a', padding: '20px', borderRadius: '5px', marginTop: '20px', border: '1px solid #ffcc00', textAlign: 'center' }}><h3 style={{ margin: '0', color: '#ffcc00' }}>👁️ MATRICE EN LECTURE SEULE — AUCUNE ACTION POSSIBLE (VIEWER)</h3></div>
+                  ) : resultat.matchObj.statut !== 'JOUE' ? (
                     <div style={{ backgroundColor: '#2a2a2a', padding: '20px', borderRadius: '5px', marginTop: '20px', border: '1px solid #444' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
                         <h3 style={{ margin: 0, color: '#ffcc00' }}>7. SÉLECTION DU TRADE</h3>
@@ -2581,7 +2669,7 @@ function App() {
                             <div style={{ flex: 1 }}><label style={lblStyle}>Ouv A ({match.cote_ouv_ext}) ➔ Act A:</label><input type="number" step="0.01" style={inputStyle} value={cotesActuelles[match.id]?.ext || ''} onChange={e => handleCoteChange(match.id, 'ext', e.target.value)} /></div>
                           </div>
                           <div style={{ display: 'flex', gap: '10px' }}>
-                            <button onClick={() => analyserMatch(match)} disabled={loadingId === match.id || estViewer} style={{...buttonStyle, flex: 3}}>{estPerime ? '🔄 RECALCULER' : (loadingId === match.id ? 'CALCUL...' : '📊 OUVRIR LA MATRICE DE TIR')}</button>
+                            <button onClick={() => voirMatrice(match)} disabled={loadingId === match.id} style={{...buttonStyle, flex: 3}}>{estViewer ? '👁️ VOIR LA MATRICE DE TIR' : (estPerime ? '🔄 RECALCULER' : (loadingId === match.id ? 'CALCUL...' : '📊 OUVRIR LA MATRICE DE TIR'))}</button>
                             <button onClick={() => resetMatch(match)} disabled={estViewer} style={{ padding: '12px', backgroundColor: '#333', color: '#ff4444', border: '1px solid #ff4444', borderRadius: '4px', cursor: estViewer ? 'not-allowed' : 'pointer', flex: 1, opacity: estViewer ? 0.5 : 1 }}>🗑️ Purger</button>
                           </div>
                         </div>
@@ -3073,6 +3161,31 @@ function App() {
                               <div><b>Retour potentiel :</b> <span style={{ color: '#00ffcc', fontWeight: 'bold' }}>{((combo.mise * combo.cote_choisie) - combo.mise).toFixed(2)} €</span></div>
                             </div>
 
+                            {/* 🆕 MATRICE POUR LES FREEBETS/COMBINÉS (VIEWER + MASTER) — détail des sélections
+                                (match, issue, cote, proba, edge, score) déjà stocké avec ce combiné au moment
+                                de sa validation, en lecture seule pour tout le monde (aucune analyse déclenchée
+                                ici, jamais recalculé). */}
+                            {combo.selections && combo.selections.length > 0 && (
+                              <div style={{ marginBottom: '15px' }}>
+                                <div style={{ color: '#aaa', fontSize: '0.85rem', marginBottom: '8px' }}>📊 Détail des sélections du combiné (au moment de la validation) :</div>
+                                <table style={tableStyle}>
+                                  <thead><tr><th style={thStyle}>Match</th><th>Issue</th><th>Cote</th><th>Proba</th><th>Edge</th><th>Score</th></tr></thead>
+                                  <tbody>
+                                    {combo.selections.map(s => (
+                                      <tr key={s.id_match || `${s.home_team}_${s.away_team}`}>
+                                        <td style={{ textAlign: 'left', padding: '8px 5px' }}>{s.home_team} - {s.away_team} <span style={{ color: '#888' }}>({s.div})</span></td>
+                                        <td>{s.issue_label || s.issue}</td>
+                                        <td>{s.cote_calculee != null ? s.cote_calculee : s.cote}</td>
+                                        <td>{s.proba != null ? `${s.proba}%` : '-'}</td>
+                                        <td>{s.edge != null ? <><Colorize val={s.edge} />%</> : '-'}</td>
+                                        <td>{s.score != null ? s.score : '-'}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+
                             {clotureComboEnCours?.id === combo.id_match ? (
                               <div style={{ display: 'flex', gap: '10px' }}>
                                 <input type="number" step="0.01" placeholder={clotureComboEnCours.type === 'GAGNE' ? "Montant gagné (€)" : "Montant récupéré (€)"} onChange={(e) => setMontantsRetourCombo({ ...montantsRetourCombo, [combo.id_match]: e.target.value })} style={inputStyle} />
@@ -3149,7 +3262,7 @@ function App() {
                                 )}
                               </div>
 
-                              <div style={{ marginBottom: '20px' }}><button onClick={() => analyserMatch(match)} disabled={loadingId === match.id || estViewer} style={{ width: '100%', padding: '10px', backgroundColor: '#1a1a1a', color: '#00ffcc', border: '1px dotted #00ffcc', borderRadius: '4px', cursor: estViewer ? 'not-allowed' : 'pointer' }}>{loadingId === match.id ? 'RECONSTRUCTION...' : (estViewer ? '🔒 Indisponible en lecture seule (score déjà affiché ci-dessus)' : '🔬 RAPPELER LA MATRICE DE TIR ORIGINALE')}</button></div>
+                              <div style={{ marginBottom: '20px' }}><button onClick={() => voirMatrice(match)} disabled={loadingId === match.id} style={{ width: '100%', padding: '10px', backgroundColor: '#1a1a1a', color: '#00ffcc', border: '1px dotted #00ffcc', borderRadius: '4px', cursor: 'pointer' }}>{loadingId === match.id ? 'CHARGEMENT...' : (estViewer ? '👁️ CONSULTER LA MATRICE DE TIR' : '🔬 RAPPELER LA MATRICE DE TIR ORIGINALE')}</button></div>
 
                               {clotureEnCours?.id === match.id ? (
                                 <div style={{ display: 'flex', gap: '10px' }}><input type="number" step="0.01" placeholder={clotureEnCours.type === 'GAGNE' ? "Montant gagné (€)" : "Montant récupéré (€)"} onChange={(e) => setMontantsRetour({...montantsRetour, [match.id]: e.target.value})} style={inputStyle} /><button onClick={() => cloturerPari(match, clotureEnCours.type, montantsRetour[match.id])} disabled={estViewer} style={{...buttonStyle, flex: 0.5, opacity: estViewer ? 0.5 : 1}}>CONFIRMER</button><button onClick={() => setClotureEnCours(null)} style={{padding: '10px', backgroundColor: '#333', color: '#fff', border: 'none', cursor: 'pointer'}}>Annuler</button></div>

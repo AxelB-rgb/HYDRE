@@ -5,6 +5,12 @@ clôture, modification, annulation) + Scanner de Marché / liste des prochains m
 ⚠️ Logique métier INCHANGÉE — déplacée depuis Serveur_Hydre.py. Seules les
 dépendances de sécurité ont été mises à jour (MASTER pour l'écriture, MASTER+VIEWER
 pour la lecture) dans le cadre du refactoring MASTER/VIEWER.
+
+🆕 Ajout (lecture seule, aucun impact sur la logique HYDRE/scores/edges) : chaque
+Matrice de Tir générée par le MASTER via /analyser est désormais persistée
+(col_matrices), et une route GET /matrice_tir/{id_match} permet au VIEWER de la
+consulter — la dernière matrice générée pour un match, y compris pour un pari déjà
+bloqué/validé — sans jamais pouvoir en déclencher une nouvelle.
 """
 from typing import List, Optional
 from datetime import datetime
@@ -14,7 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from backend.auth import require_master, require_any_role
-from backend.config import col_fixtures, col_paris
+from backend.config import col_fixtures, col_paris, col_matrices
 from backend.utils import safe_float, _cote_est_verrouillee
 from backend.hydre_engine import (
     calculer_predictions_completes, evaluer_profil, respecte_criteres_selection,
@@ -155,7 +161,9 @@ def analyser_match(requete: RequeteMatch):
     # None si le match n'est éligible à aucune issue simple : jamais inventé.
     score_hydre_snapshot = _snapshot_score_hydre_pour_match(doc)
 
-    return {
+    match_id = f"{requete.home_team}_{requete.away_team}_{doc['Date']}"
+
+    resultat = {
         "Match": f"{requete.home_team} vs {requete.away_team}", "matchObj": {"div": doc.get("Div", "Inconnu")},
         "Score_Hydre": score_hydre_snapshot,
         "Radar_Marche": {"Ouv": {"H": float(requete.cote_ouverture_dom), "D": float(requete.cote_ouverture_nul),
@@ -186,6 +194,43 @@ def analyser_match(requete: RequeteMatch):
         "Anomalies": anomalies[:3], "Audit_Comite": audit_comite,
         "Juge": {"Message": juge_msg, "Type": "VALIDE" if tir_valide else "NO_BET"}
     }
+
+    # 🆕 Persiste un snapshot de cette Matrice de Tir (aucun impact sur la réponse ni sur la
+    # logique de calcul ci-dessus) afin que le VIEWER puisse la consulter en lecture seule,
+    # y compris après que ce match soit passé en statut JOUE (pari bloqué/validé).
+    try:
+        col_matrices.update_one(
+            {"id_match": match_id},
+            {"$set": {
+                "id_match": match_id,
+                "home_team": requete.home_team,
+                "away_team": requete.away_team,
+                "div": doc.get("Div", "Inconnu"),
+                "matrice": resultat,
+                "genere_le": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }},
+            upsert=True
+        )
+    except Exception:
+        # La persistance de la matrice est un confort de lecture pour le VIEWER : une erreur
+        # ici ne doit jamais empêcher le MASTER d'obtenir sa Matrice de Tir.
+        pass
+
+    return resultat
+
+
+@router.get("/matrice_tir/{id_match}", dependencies=[Depends(require_any_role)])
+def get_matrice_tir(id_match: str):
+    """🆕 Lecture seule (MASTER et VIEWER) de la dernière Matrice de Tir générée pour ce
+    match — aucune analyse n'est déclenchée ici, aucune donnée n'est modifiée. Permet au
+    VIEWER de consulter la matrice associée à un match analysé ou à un pari déjà bloqué,
+    exactement telle qu'elle a été produite par le MASTER via /analyser."""
+    doc = col_matrices.find_one({"id_match": id_match})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Aucune Matrice de Tir disponible pour ce match pour le moment.")
+    matrice = dict(doc["matrice"])
+    matrice["_genere_le"] = doc.get("genere_le")
+    return matrice
 
 
 @router.get("/scanner_marche", dependencies=[Depends(require_any_role)])
@@ -344,4 +389,3 @@ def cloturer_pari(req: RequeteCloture):
 # (celle choisie par le Scanner de Marché), itertools.combinations garantit à la fois
 # l'absence de doublons de combinés ET l'absence de deux sélections du même match dans
 # un même combiné.
-

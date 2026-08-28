@@ -27,6 +27,13 @@ app.add_middleware(
     expose_headers=["*"]
 )
 
+# 🆕 Vérification de disponibilité du serveur (utilisé par le frontend pour attendre
+# proprement le démarrage/réveil du backend, ex. cold start Render) — public, sans
+# authentification, sans aucune donnée sensible ni logique métier.
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
 # 🆕 Authentification : renvoie un token de session (MASTER ou VIEWER), jamais le secret.
 app.post("/login")(login)
 

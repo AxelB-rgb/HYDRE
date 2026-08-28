@@ -15,6 +15,22 @@ from backend.utils import _debut_saison_actuelle
 router = APIRouter()
 
 
+def _paris_en_cours_liste():
+    """🆕 Taux de sélection dynamique : liste légère (date, div) de TOUS les paris encore
+    "en cours" (Resultat_Final pas encore renseigné) — paris simples ET combinés Freebet
+    confondus, puisque col_paris est la collection commune aux deux (voir valider_pari et
+    valider_combo_freebet). Un pari en cours ne peut pas être ANNULE (ce statut n'existe
+    que sur un ticket déjà réglé), donc rien à exclure ici. N'affecte aucune formule/score/
+    edge/seuil : simple lecture, utilisée uniquement pour élargir le compteur "matchs
+    sélectionnés" du Dashboard au-delà des seuls tickets déjà réglés."""
+    cursor = col_paris.find({"Resultat_Final": {"$exists": False}}, {"date": 1, "div": 1})
+    liste = []
+    for p in cursor:
+        date_str = str(p.get("date", ""))
+        liste.append({"date": date_str[:10], "div": p.get("div", "Inconnu")})
+    return liste
+
+
 @router.get("/statistiques_dashboard", dependencies=[Depends(require_any_role)])
 def statistiques_dashboard():
     config = col_parametres.find_one({"type": "bankroll"})
@@ -46,13 +62,18 @@ def statistiques_dashboard():
         matchs_analyses_vus.add(mid)
         matchs_analyses.append({"date": d.get("Date"), "div": d.get("Div", "Inconnu")})
 
+    # 🆕 Taux de sélection dynamique (voir _paris_en_cours_liste ci-dessus) : calculé une seule
+    # fois ici et renvoyé dans les deux branches de retour, simples et combinés confondus.
+    paris_en_cours = _paris_en_cours_liste()
+
     if not paris_tous:
         return {
             "kpis": {"profit_net": 0, "roi": 0, "winrate": 0, "cote_moyenne": 0, "total_paris": 0, "roc": 0, "clv": 0,
                      "count": 0},
             "chartData": [], "statsIssue": {}, "statsCotes": {}, "statsLigue": {},
             "evolution": [], "historique": [], "tableData": [], "stats_bookmakers": {},
-            "statsTailleCombine": {}, "statsTypePari": {}, "matchs_analyses": matchs_analyses
+            "statsTailleCombine": {}, "statsTypePari": {}, "matchs_analyses": matchs_analyses,
+            "paris_en_cours": paris_en_cours
         }
 
 
@@ -247,5 +268,9 @@ def statistiques_dashboard():
         "historique": historique,
         "tableData": historique,
         "stats_bookmakers": stats_books,
-        "matchs_analyses": matchs_analyses
+        "matchs_analyses": matchs_analyses,
+        # 🆕 Taux de sélection dynamique : liste des paris encore en cours (simples + combinés
+        # Freebet), pour que le Dashboard puisse les additionner aux paris déjà réglés (hors
+        # ANNULÉ) dans le calcul du taux de sélection, sans toucher à la logique HYDRE.
+        "paris_en_cours": paris_en_cours
     }

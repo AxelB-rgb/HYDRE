@@ -38,6 +38,11 @@ col_paris = db["Paris_Engages"]
 col_parametres = db["Parametres"]
 col_profilage = db["Profils_Rentabilite"]
 col_mouvements = db["Mouvements_Bankroll"]
+# 🆕 Persistance des Matrices de Tir générées par le MASTER, pour permettre au VIEWER de
+# consulter (lecture seule) la dernière matrice générée pour un match, y compris pour un
+# pari déjà bloqué/validé. Aucune logique de calcul n'est modifiée : cette collection ne
+# fait que stocker un snapshot du résultat déjà produit par /analyser.
+col_matrices = db["Matrices_Tir"]
 
 # ==========================================
 # CONSTANTES — HYDRE / SCORING
