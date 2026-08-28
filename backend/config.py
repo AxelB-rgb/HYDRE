@@ -90,12 +90,12 @@ FREEBET_TOP_N_PAR_TAILLE = 25
 # sélections (0.17) ; la taille/complexité pèse volontairement peu (0.08) et est normalisée
 # de façon relative (voir taille_score) pour ne jamais double-pénaliser les combinés longs.
 PONDERATION_SCORE_FREEBET = {
-    "proba": 0.30,
-    "ev": 0.25,
-    "edge": 0.15,
-    "qualite_selections": 0.20,
-    "cote": 0.05,
-    "taille": 0.05,
+    "proba": 0.32,
+    "ev": 0.23,
+    "edge": 0.10,
+    "qualite_selections": 0.17,
+    "cote": 0.08,
+    "taille": 0.10,
 }
 
 # Niveau de risque d'un combiné, basé sur sa probabilité combinée (%) — purement informatif,
@@ -170,7 +170,7 @@ FREEBET_MAX_TICKETS_PORTEFEUILLE = 10
 # ou remplacement) doit apporter pour être retenu. Volontairement UNIQUE (plus de seuil
 # différencié par profil) : l'équilibre des profils fait désormais partie intégrante du score
 # composite lui-même, il n'a donc plus besoin d'un traitement à part dans le critère d'arrêt.
-FREEBET_EPSILON_AMELIORATION_PORTEFEUILLE = 0.05
+FREEBET_EPSILON_AMELIORATION_PORTEFEUILLE = 0.01
 # Nombre de passes de raffinement (retrait / remplacement) après la construction progressive —
 # permet au système de revenir sur ses choix (un ticket ajouté tôt peut devenir sous-optimal
 # une fois le portefeuille plus fourni) sans effectuer une recherche combinatoire complète.
