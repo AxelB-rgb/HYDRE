@@ -362,12 +362,50 @@ def _niveau_concentration_match(exposition_pct):
     return "FAIBLE"
 
 
+def _penalite_chevauchement_paire(nb_communs, taille_min):
+    """🔧 REFONTE : pénalité PROGRESSIVE basée sur le NOMBRE ABSOLU de matchs communs entre
+    deux tickets — jamais une condition d'exclusion, seulement un coût croissant :
+    - 0 match commun  -> aucune pénalité (configuration idéalement favorisée)
+    - 1 match commun  -> pénalité très faible
+    - 2 matchs communs -> pénalité modérée (le ticket reste parfaitement éligible)
+    - 3 matchs communs -> pénalité plus marquée (reste éligible)
+    - 4+ matchs communs -> pénalité encore plus forte, croissante avec le nombre de matchs
+    - tickets quasi identiques (le plus petit ticket est ENTIÈREMENT inclus dans l'autre)
+      -> pénalité forte supplémentaire, mais toujours un coût, jamais un rejet automatique.
+    Un ticket à fort chevauchement reste donc sélectionnable si sa qualité/EV/probabilité
+    ou son apport global au portefeuille compense cette pénalité (voir _calculer_score_portefeuille,
+    qui combine ce score de diversification à la conversion, l'EV, la qualité et l'équilibre
+    des profils — jamais un critère isolé et bloquant)."""
+    if nb_communs <= 0:
+        return 0.0
+    if nb_communs == 1:
+        base = 3.0
+    elif nb_communs == 2:
+        base = 10.0
+    elif nb_communs == 3:
+        base = 20.0
+    else:
+        base = min(45.0, 20.0 + (nb_communs - 3) * 10.0)
+
+    # Tickets quasi identiques : tous les matchs du plus petit ticket sont partagés avec
+    # l'autre — pénalité additionnelle, toujours bornée, jamais une exclusion.
+    if taille_min > 0 and nb_communs >= taille_min:
+        base += 15.0
+
+    return min(60.0, base)
+
+
 def _analyser_diversification_portefeuille(portefeuille, nb_candidats_total=0):
-    """🆕 Analyse le recouvrement entre les tickets d'un portefeuille de combinés :
-    - recouvrement entre 2 tickets = nb de matchs communs / nb de matchs du PLUS PETIT ticket
-    - concentration de chaque match (avec niveau d'alerte FAIBLE/MODEREE/FORTE/TRES_FORTE)
+    """🔧 REFONTE : analyse le partage de matchs entre les tickets d'un portefeuille de
+    combinés. Partager des matchs entre tickets est NORMAL et ATTENDU (1, 2, 3 matchs
+    communs ou plus) — ce n'est jamais un motif d'exclusion, seulement un facteur de
+    pénalité progressive dans le score de diversification (voir _penalite_chevauchement_paire) :
+    - recouvrement entre 2 tickets = nb de matchs communs (compte absolu, pas seulement %)
+    - concentration de chaque match (avec niveau d'alerte FAIBLE/MODEREE/FORTE/TRES_FORTE,
+      purement informatif)
     - matchs critiques = concentration FORTE ou TRES_FORTE (>= 60%)
-    - score de diversification global (100 = aucun recouvrement, 0 = recouvrement total)
+    - score de diversification global (100 = aucun chevauchement, décroît progressivement
+      avec le nombre de matchs communs entre paires de tickets — jamais un couperet)
     - indicateur de couverture = part des matchs éligibles du jour réellement utilisés."""
     nb_tickets = len(portefeuille)
     if nb_tickets == 0:
@@ -388,6 +426,9 @@ def _analyser_diversification_portefeuille(portefeuille, nb_candidats_total=0):
                 }
             match_info[s["id"]]["nb_tickets"] += 1
 
+    # 🆕 Concentration par match — purement informative (jamais bloquante, jamais un motif
+    # d'exclusion) : aide à repérer visuellement qu'un même match revient souvent, sans
+    # empêcher ce partage.
     concentration_matchs = []
     for info in match_info.values():
         exposition_pct = round(info["nb_tickets"] / nb_tickets * 100, 1)
@@ -398,6 +439,7 @@ def _analyser_diversification_portefeuille(portefeuille, nb_candidats_total=0):
         })
     concentration_matchs.sort(key=lambda m: m["exposition_pct"], reverse=True)
     matchs_critiques = [m for m in concentration_matchs if m["alerte"]]
+    exposition_max_pct = max((m["exposition_pct"] for m in concentration_matchs), default=0.0)
 
     recouvrements_par_paire = []
     for i in range(nb_tickets):
@@ -405,28 +447,36 @@ def _analyser_diversification_portefeuille(portefeuille, nb_candidats_total=0):
             ids_i = {s["id"] for s in portefeuille[i]["selections"]}
             ids_j = {s["id"] for s in portefeuille[j]["selections"]}
             communs = ids_i & ids_j
+            nb_communs = len(communs)
             plus_petit = min(len(ids_i), len(ids_j))
-            pct = round((len(communs) / plus_petit) * 100, 1) if plus_petit > 0 else 0.0
+            pct = round((nb_communs / plus_petit) * 100, 1) if plus_petit > 0 else 0.0
+            penalite = _penalite_chevauchement_paire(nb_communs, plus_petit)
             recouvrements_par_paire.append({
                 "ticket_a_profil": portefeuille[i]["profil"], "ticket_b_profil": portefeuille[j]["profil"],
-                "nb_matchs_communs": len(communs), "pourcentage_recouvrement": pct
+                "nb_matchs_communs": nb_communs, "pourcentage_recouvrement": pct,
+                "penalite_chevauchement": penalite
             })
 
     recouvrement_moyen_pct = round(
         sum(r["pourcentage_recouvrement"] for r in recouvrements_par_paire) / len(recouvrements_par_paire), 1
     ) if recouvrements_par_paire else 0.0
 
-    # 🆕 Pénalité de CONCENTRATION/DÉPENDANCE : au-delà de la moyenne des recouvrements par
-    # paire, un portefeuille où plusieurs tickets dépendent TOUS du même match doit voir son
-    # intérêt marginal fortement réduit — même si le recouvrement moyen par paire reste modéré
-    # (ex. un match présent dans 6 tickets sur 8 concentre le risque bien plus qu'un simple
-    # recouvrement moyen ne le laisserait penser). Deux x2 qui partagent un match ne sont donc
-    # pas automatiquement pénalisés lourdement (exposition faible si le reste diverge), mais
-    # l'exposition MAXIMALE observée sur un seul match tire le score vers le bas au-delà du
-    # seuil de concentration "modérée".
-    exposition_max_pct = max((m["exposition_pct"] for m in concentration_matchs), default=0.0)
-    penalite_concentration = round(max(0.0, exposition_max_pct - FREEBET_SEUIL_CONCENTRATION_MODEREE) * 0.6, 1)
-    score_diversification = round(max(0.0, 100.0 - recouvrement_moyen_pct - penalite_concentration), 1)
+    # 🔧 REFONTE : le score de diversification n'est plus dérivé d'un pourcentage de
+    # recouvrement relatif à la taille du plus petit ticket, mais d'une pénalité PROGRESSIVE
+    # basée sur le NOMBRE ABSOLU de matchs communs par paire (voir _penalite_chevauchement_paire).
+    # On combine la pénalité moyenne (tolère un chevauchement généralisé mais léger) et la
+    # pénalité la plus forte observée (reste sensible à une paire quasi identique même si le
+    # reste du portefeuille est bien diversifié) — jamais un critère d'exclusion, uniquement
+    # un coût qui réduit le score global du portefeuille en proportion du chevauchement.
+    if recouvrements_par_paire:
+        penalites = [r["penalite_chevauchement"] for r in recouvrements_par_paire]
+        penalite_moyenne = sum(penalites) / len(penalites)
+        penalite_max = max(penalites)
+    else:
+        penalite_moyenne = 0.0
+        penalite_max = 0.0
+    penalite_concentration = round(0.7 * penalite_moyenne + 0.3 * penalite_max, 1)
+    score_diversification = round(max(0.0, 100.0 - penalite_concentration), 1)
 
     nb_matchs_uniques = len(match_info)
     couverture_pct = round((nb_matchs_uniques / nb_candidats_total) * 100, 1) if nb_candidats_total > 0 else 0.0
@@ -1218,5 +1268,3 @@ def cloturer_combo_freebet(req: RequeteClotureCombo):
         "$set": {"Resultat_Final": req.resultat, "Montant_Retour": req.montant_retour, "Cote_Cloture": req.cote_cloture,
                  "Date_Cloture": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}})
     return {"message": "Combiné Freebet clôturé et archivé."}
-
-
