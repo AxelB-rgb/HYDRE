@@ -170,11 +170,11 @@ FREEBET_MAX_TICKETS_PORTEFEUILLE = 10
 # ou remplacement) doit apporter pour être retenu. Volontairement UNIQUE (plus de seuil
 # différencié par profil) : l'équilibre des profils fait désormais partie intégrante du score
 # composite lui-même, il n'a donc plus besoin d'un traitement à part dans le critère d'arrêt.
-FREEBET_EPSILON_AMELIORATION_PORTEFEUILLE = 0.01
+FREEBET_EPSILON_AMELIORATION_PORTEFEUILLE = 0.001
 # Nombre de passes de raffinement (retrait / remplacement) après la construction progressive —
 # permet au système de revenir sur ses choix (un ticket ajouté tôt peut devenir sous-optimal
 # une fois le portefeuille plus fourni) sans effectuer une recherche combinatoire complète.
-FREEBET_MAX_PASSES_RAFFINEMENT_PORTEFEUILLE = 3
+FREEBET_MAX_PASSES_RAFFINEMENT_PORTEFEUILLE = 4
 
 
 # 🔧 TEMPORAIRE — diagnostic du goulot d'étranglement de _construire_portefeuille_freebet.
