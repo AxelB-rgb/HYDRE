@@ -143,29 +143,42 @@ def normaliser(valeur, mini, maxi):
 # ==========================================
 
 def _calculer_scores_groupe(groupe):
-    """🔒 Formule INCHANGÉE du Scanner de Marché (PONDERATION_SCORE) — calcule un score relatif au
-    sein du groupe fourni (matchs POTABLE partageant la même date réelle). Modifie 'score' en place."""
+    """🔧 FIX SCORE STABLE : le score INDIVIDUEL d'un match ne doit dépendre QUE des
+    données propres à ce match (edge, proba, roi historique, volume historique, gain
+    potentiel) — jamais du pool/groupe de matchs avec lequel il est calculé. L'ancienne
+    version normalisait chaque valeur par le min/max DU GROUPE fourni : bloquer ou
+    sélectionner d'autres matchs changeait alors ce min/max, donc le score affiché
+    pour un match totalement inchangé, ce qui est le bug rapporté.
+
+    Correction : normalisation à bornes FIXES (jamais recalculées à partir du groupe),
+    cohérentes avec les critères de sélection existants (respecte_criteres_selection,
+    evaluer_profil). Les pondérations (PONDERATION_SCORE) restent strictement
+    inchangées. Le tri par score au sein d'un groupe (sélection SELECTIONNE/POTABLE
+    dans le Scanner de Marché) continue de fonctionner à l'identique puisque le
+    classement relatif entre matchs est préservé — seule la valeur affichée devient
+    stable. Ceci ne touche PAS le score d'un combiné Freebet ni le score du
+    portefeuille (backend/freebet_optimizer.py), qui restent des calculs distincts,
+    volontairement relatifs à leur propre pool."""
     if not groupe:
         return
-    edges = [r["edge"] for r in groupe]
-    probas = [r["proba"] for r in groupe]
-    rois = [r["roi_historique"] for r in groupe]
-    vols = [r["volume_historique"] for r in groupe]
-    gains = [r["gain_potentiel"] for r in groupe]
 
-    mn_e, mx_e = min(edges), max(edges)
-    mn_p, mx_p = min(probas), max(probas)
-    mn_r, mx_r = min(rois), max(rois)
-    mn_v, mx_v = min(vols), max(vols)
-    mn_g, mx_g = min(gains), max(gains)
+    # Bornes fixes — jamais dérivées du groupe. Choisies pour rester cohérentes avec
+    # les seuils déjà en vigueur ailleurs dans le moteur (SEUIL_PROBA, COTE_MAX,
+    # les tags de evaluer_profil pour le ROI). Les valeurs hors bornes sont simplement
+    # clampées à 0 ou 1 par normaliser(), comme c'était déjà le cas avant.
+    BORNES_EDGE = (0.0, 100.0)
+    BORNES_PROBA = (SEUIL_PROBA, 100.0)
+    BORNES_ROI = (0.0, 30.0)
+    BORNES_VOLUME = (50.0, 500.0)
+    BORNES_GAIN = (0.0, COTE_MAX - 1.0)
 
     for r in groupe:
         score = (
-            PONDERATION_SCORE["edge"] * normaliser(r["edge"], mn_e, mx_e) +
-            PONDERATION_SCORE["proba"] * normaliser(r["proba"], mn_p, mx_p) +
-            PONDERATION_SCORE["roi_historique"] * normaliser(r["roi_historique"], mn_r, mx_r) +
-            PONDERATION_SCORE["volume_historique"] * normaliser(r["volume_historique"], mn_v, mx_v) +
-            PONDERATION_SCORE["gain_potentiel"] * normaliser(r["gain_potentiel"], mn_g, mx_g)
+            PONDERATION_SCORE["edge"] * normaliser(r["edge"], *BORNES_EDGE) +
+            PONDERATION_SCORE["proba"] * normaliser(r["proba"], *BORNES_PROBA) +
+            PONDERATION_SCORE["roi_historique"] * normaliser(r["roi_historique"], *BORNES_ROI) +
+            PONDERATION_SCORE["volume_historique"] * normaliser(r["volume_historique"], *BORNES_VOLUME) +
+            PONDERATION_SCORE["gain_potentiel"] * normaliser(r["gain_potentiel"], *BORNES_GAIN)
         ) * 100
         r["score"] = round(score, 1)
 
@@ -400,5 +413,3 @@ def _scanner_marche_data():
         "exposition_utilisee_pct": exposition_utilisee_today,
         "matchs": resultats_tries
     }
-
-
