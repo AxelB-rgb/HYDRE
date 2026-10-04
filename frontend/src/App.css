@@ -2,6 +2,51 @@
   text-align: center;
 }
 
+.division-warnings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 7px;
+  text-align: left;
+}
+
+.division-warning {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 8px;
+  max-width: 100%;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  font-weight: 400;
+}
+
+.division-warning-status {
+  padding: 2px 7px;
+  border: 1px solid rgba(230, 177, 75, 0.3);
+  border-radius: 4px;
+  background: rgba(230, 177, 75, 0.08);
+  color: #e6b14b;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.division-warning-team {
+  color: #d0d0d0;
+  font-weight: 600;
+}
+
+.division-warning-route {
+  color: #999;
+}
+
+.division-warning-route > span {
+  color: #e6b14b;
+  margin: 0 2px;
+}
+
 .App-logo {
   height: 40vmin;
   pointer-events: none;

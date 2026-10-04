@@ -3198,11 +3198,17 @@ const getBookStyle = (name) => {
 
 const ServerLoader = ({ count }) => count > 0 ? <div role="status" aria-live="polite" style={{ position: 'fixed', bottom: 20, right: 20, zIndex: 10000, backgroundColor: '#1a1a1a', border: '2px solid #00ffcc', padding: '16px 24px', borderRadius: 8, boxShadow: '0 4px 24px #000', color: '#00ffcc', fontWeight: 'bold' }}>⏳ Chargement serveur…</div> : null;
 
-const DivisionWarnings = ({ match }) => (match.division_warnings || []).map(w => (
-  <div key={w.team} style={{ backgroundColor: '#442600', border: '2px solid #ffcc00', borderRadius: 4, padding: '8px 10px', marginTop: 6, color: '#ffdd55', fontWeight: 'bold', fontSize: '0.85rem' }} title="Les statistiques glissantes peuvent provenir d'un autre niveau de compétition. Aucun ajustement automatique du score.">
-    ⚠️ {w.sens} — {w.team} : {w.ancienne_division} → {w.nouvelle_division}
-  </div>
-));
+const DivisionWarnings = ({ match }) => {
+  const warnings = match.division_warnings || [];
+  if (!warnings.length) return null;
+  return <span className="division-warnings">
+    {warnings.map(w => <span key={w.team} className="division-warning" title="Statistiques historiques issues d'un autre niveau de compétition. Aucun ajustement automatique du score.">
+      <span className="division-warning-status">⚠ {w.sens}</span>
+      <span className="division-warning-team">{w.team}</span>
+      <span className="division-warning-route">{w.ancienne_division} <span aria-label="vers">→</span> {w.nouvelle_division}</span>
+    </span>)}
+  </span>;
+};
 
 // STYLES
 const menuActive = { padding: '15px 30px', backgroundColor: '#00ffcc', color: '#000', fontWeight: 'bold', fontSize: '1.1rem', border: 'none', borderRadius: '5px', cursor: 'pointer' };
