@@ -11,6 +11,7 @@ from backend.auth import require_any_role
 from backend.config import col_fixtures, col_historique, col_paris, col_parametres
 from backend.bankroll import _pnl_cash_pari
 from backend.utils import _debut_saison_actuelle
+from backend.settlement import retour_net, type_fond_effectif
 
 router = APIRouter()
 
@@ -29,6 +30,22 @@ def _paris_en_cours_liste():
         date_str = str(p.get("date", ""))
         liste.append({"date": date_str[:10], "div": p.get("div", "Inconnu")})
     return liste
+
+
+def _matchs_selectionnes_liste(debut_saison):
+    """Matchs uniques validés : tickets ouverts ou réglés, hors annulations.
+
+    Un match présent dans plusieurs tickets est compté une fois. Les jambes d'un
+    combiné gardent leur propre date et ligue pour les filtres du dashboard.
+    """
+    matches = {}
+    for p in col_paris.find({"Resultat_Final": {"$ne": "ANNULE"}}):
+        legs = p.get("selections_combine", []) if p.get("est_combine_freebet") else [p]
+        for leg in legs:
+            mid = leg.get("id_match") or leg.get("id")
+            if mid and str(leg.get("date", ""))[:10] >= debut_saison:
+                matches[mid] = {"id": mid, "date": str(leg.get("date", ""))[:10], "div": leg.get("div", "Inconnu")}
+    return list(matches.values())
 
 
 @router.get("/statistiques_dashboard", dependencies=[Depends(require_any_role)])
@@ -60,7 +77,14 @@ def statistiques_dashboard():
         if mid in matchs_analyses_vus:
             continue
         matchs_analyses_vus.add(mid)
-        matchs_analyses.append({"date": d.get("Date"), "div": d.get("Div", "Inconnu")})
+        matchs_analyses.append({"id": mid, "date": d.get("Date"), "div": d.get("Div", "Inconnu")})
+
+    for d in col_fixtures.find({"Date": {"$gte": debut_saison}, "Statut": {"$in": ["ANALYSE", "JOUE", "ARCHIVE"]}}):
+        mid = f"{d.get('HomeTeam')}_{d.get('AwayTeam')}_{d.get('Date')}"
+        if mid not in matchs_analyses_vus:
+            matchs_analyses_vus.add(mid)
+            matchs_analyses.append({"id": mid, "date": d.get("Date"), "div": d.get("Div", "Inconnu")})
+    matchs_selectionnes = _matchs_selectionnes_liste(debut_saison)
 
     # 🆕 Taux de sélection dynamique (voir _paris_en_cours_liste ci-dessus) : calculé une seule
     # fois ici et renvoyé dans les deux branches de retour, simples et combinés confondus.
@@ -72,8 +96,8 @@ def statistiques_dashboard():
                      "count": 0},
             "chartData": [], "statsIssue": {}, "statsCotes": {}, "statsLigue": {},
             "evolution": [], "historique": [], "tableData": [], "stats_bookmakers": {},
-            "statsTailleCombine": {}, "statsTypePari": {}, "matchs_analyses": matchs_analyses,
-            "paris_en_cours": paris_en_cours
+            "statsTailleCombine": {}, "statsTailleCombineCash": {}, "statsTypePari": {}, "matchs_analyses": matchs_analyses,
+            "paris_en_cours": paris_en_cours, "matchs_selectionnes": matchs_selectionnes
         }
 
 
@@ -82,7 +106,7 @@ def statistiques_dashboard():
     winrate = (paris_gagnes / total_paris) * 100 if total_paris > 0 else 0
 
     total_mise = sum(float(p.get("mise", 0) or 0) for p in paris)
-    total_retour = sum(float(p.get("Montant_Retour", 0) or 0) for p in paris)
+    total_retour = sum(retour_net(p) for p in paris)
     # 🆕 P&L CASH réel (voir _pnl_cash_pari) : une mise FREEBET n'est jamais un investissement
     # cash, donc sa perte ne doit jamais réduire ce profit_net, ni son gain être amputé de la
     # mise "virtuelle". total_mise/total_retour restent des totaux bruts (cote moyenne, etc.).
@@ -107,9 +131,11 @@ def statistiques_dashboard():
 
     stats_books, stats_issue, stats_cotes, stats_ligue, chart_data_dict = {}, {}, {}, {}, {}
     stats_taille_combine = {}
+    stats_taille_combine_cash = {}
     stats_type_pari = {
         "SIMPLE": {"count": 0, "wins": 0, "mise": 0, "pnl": 0},
         "COMBINE": {"count": 0, "wins": 0, "mise": 0, "pnl": 0},
+        "COMBINE_CASH": {"count": 0, "wins": 0, "mise": 0, "pnl": 0},
     }
 
     def init_stat(d, k):
@@ -118,7 +144,7 @@ def statistiques_dashboard():
     # --- Boucle KPI / stats de performance : UNIQUEMENT les tickets non-annulés ---
     for p in paris:
         mise = float(p.get("mise", 0) or 0)
-        retour = float(p.get("Montant_Retour", 0) or 0)
+        retour = retour_net(p)
         pnl_pari = _pnl_cash_pari(p)  # 🆕 P&L cash réel — jamais de perte cash sur une mise FREEBET
         current_bk += pnl_pari
         is_win = 1 if p.get("Resultat_Final") == "GAGNE" else 0
@@ -167,18 +193,19 @@ def statistiques_dashboard():
 
         # 🆕 §16/§17 : distinction compacte simples/combinés + performance par taille de combiné.
         # Le ticket combiné est TOUJOURS compté UNE SEULE FOIS (§14) — jamais par sélection.
-        type_key = "COMBINE" if est_combine else "SIMPLE"
+        type_key = ("COMBINE_CASH" if type_fond_effectif(p) == "CASH" else "COMBINE") if est_combine else "SIMPLE"
         stats_type_pari[type_key]["count"] += 1
         stats_type_pari[type_key]["mise"] += mise
         stats_type_pari[type_key]["pnl"] += pnl_pari
         stats_type_pari[type_key]["wins"] += is_win
 
         if est_combine and taille_combine:
-            init_stat(stats_taille_combine, str(taille_combine))
-            stats_taille_combine[str(taille_combine)]["count"] += 1
-            stats_taille_combine[str(taille_combine)]["mise"] += mise
-            stats_taille_combine[str(taille_combine)]["pnl"] += pnl_pari
-            stats_taille_combine[str(taille_combine)]["wins"] += is_win
+            tailles = stats_taille_combine_cash if type_fond_effectif(p) == "CASH" else stats_taille_combine
+            init_stat(tailles, str(taille_combine))
+            tailles[str(taille_combine)]["count"] += 1
+            tailles[str(taille_combine)]["mise"] += mise
+            tailles[str(taille_combine)]["pnl"] += pnl_pari
+            tailles[str(taille_combine)]["wins"] += is_win
 
         date_str = p.get("Date_Cloture", p.get("date", ""))
         period = date_str[:7] if len(date_str) >= 7 else "UNK"
@@ -191,7 +218,7 @@ def statistiques_dashboard():
     # --- Historique affiché : TOUS les tickets réglés, y compris ANNULÉ (visible, non comptabilisé) ---
     for p in paris_tous:
         mise = float(p.get("mise", 0) or 0)
-        retour = float(p.get("Montant_Retour", 0) or 0)
+        retour = retour_net(p)
         resultat_final = p.get("Resultat_Final")
         pnl_pari = round(_pnl_cash_pari(p), 2)  # 🆕 P&L cash réel — jamais de perte cash sur une mise FREEBET
         date_str = p.get("Date_Cloture", p.get("date", ""))
@@ -212,7 +239,8 @@ def statistiques_dashboard():
             "bookmaker": book,
             # 🆕 §3 : CASH ou FREEBET, sans ambiguïté (défaut CASH pour les anciens paris, comme
             # partout ailleurs dans le calcul financier — voir _pnl_cash_pari).
-            "type_fond": p.get("type_fond", "CASH"),
+            "type_fond": type_fond_effectif(p),
+            "type_ticket": type_fond_effectif(p) if p.get("est_combine_freebet") else None,
             "est_combine": bool(p.get("est_combine_freebet")), "taille_combine": p.get("taille_combine"),
             # 🆕 DASHBOARD V2 (§6) : null pour les anciens paris / combinés — jamais inventé.
             "edge": p.get("edge"),
@@ -236,8 +264,7 @@ def statistiques_dashboard():
                                                                                                         "Mise"] > 0 else 0
         stats_books[b]["PnL"] = round(stats_books[b]["PnL"], 2)
 
-    for t in stats_taille_combine:
-        d = stats_taille_combine[t]
+    for d in [*stats_taille_combine.values(), *stats_taille_combine_cash.values()]:
         d["winrate"] = round((d["wins"] / d["count"]) * 100, 1) if d["count"] > 0 else 0
         d["roi"] = round((d["pnl"] / d["mise"]) * 100, 2) if d["mise"] > 0 else 0
         d["pnl"] = round(d["pnl"], 2)
@@ -263,6 +290,7 @@ def statistiques_dashboard():
         "statsCotes": stats_cotes,
         "statsLigue": stats_ligue,
         "statsTailleCombine": stats_taille_combine,
+        "statsTailleCombineCash": stats_taille_combine_cash,
         "statsTypePari": stats_type_pari,
         "evolution": evolution,
         "historique": historique,
@@ -272,5 +300,5 @@ def statistiques_dashboard():
         # 🆕 Taux de sélection dynamique : liste des paris encore en cours (simples + combinés
         # Freebet), pour que le Dashboard puisse les additionner aux paris déjà réglés (hors
         # ANNULÉ) dans le calcul du taux de sélection, sans toucher à la logique HYDRE.
-        "paris_en_cours": paris_en_cours
+        "paris_en_cours": paris_en_cours, "matchs_selectionnes": matchs_selectionnes
     }

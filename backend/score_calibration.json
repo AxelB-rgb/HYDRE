@@ -1,0 +1,30 @@
+{
+  "version": "historical-2021-2025-v1",
+  "source": "Data/all-euro-data, features et modèles HYDRE existants",
+  "calibration_start": "2021-08-01",
+  "calibration_end": "2025-06-30",
+  "samples": 5863,
+  "method": "bornes fixes P5/P95 des candidats éligibles historiques; ROI/volume inchangés",
+  "bounds": {
+    "edge": [
+      0.735265,
+      34.442456
+    ],
+    "proba": [
+      45.842599,
+      77.28012
+    ],
+    "gain_potentiel": [
+      0.36,
+      1.62
+    ],
+    "roi_historique": [
+      0,
+      30
+    ],
+    "volume_historique": [
+      50,
+      500
+    ]
+  }
+}

@@ -7,8 +7,8 @@
 
 const STORAGE_KEY = 'hydre_session';
 
-export async function login(apiUrl, motDePasse) {
-  const res = await fetch(`${apiUrl}/login`, {
+export async function login(apiUrl, motDePasse, request = fetch) {
+  const res = await request(`${apiUrl}/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ mot_de_passe: motDePasse })

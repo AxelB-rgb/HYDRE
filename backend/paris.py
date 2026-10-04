@@ -27,6 +27,8 @@ from backend.hydre_engine import (
     _snapshot_score_hydre_pour_match, _scanner_marche_data,
 )
 from backend.bankroll import _calculer_finances_dict
+from backend.division_warnings import warnings_division
+from backend.settlement import montant_reglement
 
 from backend.utils import SEUIL_GEL_COTE_HEURES
 
@@ -38,6 +40,7 @@ def get_prochains_matchs():
     try:
         cursor = col_fixtures.find().sort([("Date", 1), ("Time", 1)])
         matchs = []
+        division_cache = {}
         now = datetime.now()
         # 🔧 FIX §3 : score/edge d'un pari déjà bloqué (JOUE) doivent être le SNAPSHOT enregistré
         # avec ce pari au moment de sa validation (col_paris.score / col_paris.edge) — jamais
@@ -67,6 +70,7 @@ def get_prochains_matchs():
                 "id": match_id, "div": doc.get("Div", "Inconnu"),
                 "date": dt_str,
                 "home_team": doc['HomeTeam'], "away_team": doc['AwayTeam'],
+                "division_warnings": warnings_division(doc, division_cache),
                 "cote_ouv_dom": round(safe_float(doc.get('Cote_Dom')), 2),
                 "cote_ouv_nul": round(safe_float(doc.get('Cote_Nul')), 2),
                 "cote_ouv_ext": round(safe_float(doc.get('Cote_Ext')), 2),
@@ -366,9 +370,13 @@ def _cascade_perte_combo_freebet(id_match):
 
 @router.post("/cloturer_pari", dependencies=[Depends(require_master)])
 def cloturer_pari(req: RequeteCloture):
+    doc = col_paris.find_one({"id_match": req.id_match})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Pari introuvable.")
+    montant = montant_reglement(doc, req.resultat, req.montant_retour)
     col_fixtures.update_one({"HomeTeam": req.home_team, "AwayTeam": req.away_team}, {"$set": {"Statut": "ARCHIVE"}})
     col_paris.update_one({"id_match": req.id_match}, {
-        "$set": {"Resultat_Final": req.resultat, "Montant_Retour": req.montant_retour, "Cote_Cloture": req.cote_cloture,
+        "$set": {"Resultat_Final": req.resultat, "Montant_Retour": montant, "Cote_Cloture": req.cote_cloture,
                  "Date_Cloture": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}})
 
     # 🆕 §2 : cascade automatique — un pari simple PERDU entraîne la perte des combinés Freebet

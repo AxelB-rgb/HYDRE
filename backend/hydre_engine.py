@@ -1,7 +1,7 @@
 """
 Moteur Hydre — logique métier CŒUR : prédictions ML (LightGBM/XGBoost), classement
 de profil (SAFE/MID/AMBITIEUX/LOTO via evaluer_profil), critères de sélection,
-score Hydre relatif au groupe (_calculer_scores_groupe) et son snapshot figé au
+score Hydre intrinsèque (_calculer_scores_groupe) et son snapshot figé au
 moment de la sélection (_snapshot_score_hydre_pour_match), Scanner de Marché.
 
 ⚠️ Aucune formule, aucun seuil, aucun poids n'a été modifié — code déplacé À
@@ -9,6 +9,11 @@ L'IDENTIQUE depuis Serveur_Hydre.py dans le cadre du refactoring MASTER/VIEWER.
 """
 import pandas as pd
 import numpy as np
+import json
+from pathlib import Path
+from backend.division_warnings import warnings_division
+
+SCORE_CALIBRATION = json.loads(Path(__file__).with_name("score_calibration.json").read_text(encoding="utf-8"))
 from datetime import datetime
 
 RESULTATS_REGLES = ("GAGNE", "PERDU", "CASHOUT")  # règlements définitifs (hors ANNULÉ)
@@ -21,6 +26,7 @@ from backend.config import (
 )
 from backend.utils import safe_float
 from backend.bankroll import _calculer_finances_dict, _pnl_cash_pari
+from backend.settlement import type_fond_effectif, dates_exposition_cash
 
 
 def evaluer_profil(issue_code, cote, edge):
@@ -143,34 +149,17 @@ def normaliser(valeur, mini, maxi):
 # ==========================================
 
 def _calculer_scores_groupe(groupe):
-    """🔧 FIX SCORE STABLE : le score INDIVIDUEL d'un match ne doit dépendre QUE des
-    données propres à ce match (edge, proba, roi historique, volume historique, gain
-    potentiel) — jamais du pool/groupe de matchs avec lequel il est calculé. L'ancienne
-    version normalisait chaque valeur par le min/max DU GROUPE fourni : bloquer ou
-    sélectionner d'autres matchs changeait alors ce min/max, donc le score affiché
-    pour un match totalement inchangé, ce qui est le bug rapporté.
+    """Score intrinsèque, bornes historiques figées P5/P95, poids métier inchangés.
 
-    Correction : normalisation à bornes FIXES (jamais recalculées à partir du groupe),
-    cohérentes avec les critères de sélection existants (respecte_criteres_selection,
-    evaluer_profil). Les pondérations (PONDERATION_SCORE) restent strictement
-    inchangées. Le tri par score au sein d'un groupe (sélection SELECTIONNE/POTABLE
-    dans le Scanner de Marché) continue de fonctionner à l'identique puisque le
-    classement relatif entre matchs est préservé — seule la valeur affichée devient
-    stable. Ceci ne touche PAS le score d'un combiné Freebet ni le score du
-    portefeuille (backend/freebet_optimizer.py), qui restent des calculs distincts,
-    volontairement relatifs à leur propre pool."""
-    if not groupe:
-        return
-
-    # Bornes fixes — jamais dérivées du groupe. Choisies pour rester cohérentes avec
-    # les seuils déjà en vigueur ailleurs dans le moteur (SEUIL_PROBA, COTE_MAX,
-    # les tags de evaluer_profil pour le ROI). Les valeurs hors bornes sont simplement
-    # clampées à 0 ou 1 par normaliser(), comme c'était déjà le cas avant.
-    BORNES_EDGE = (0.0, 100.0)
-    BORNES_PROBA = (SEUIL_PROBA, 100.0)
-    BORNES_ROI = (0.0, 30.0)
-    BORNES_VOLUME = (50.0, 500.0)
-    BORNES_GAIN = (0.0, COTE_MAX - 1.0)
+    Le pool courant et l'exposition n'interviennent jamais dans la calibration.
+    Voir scripts/calibrate_scores.py et score_distribution_report.json.
+    """
+    bounds = SCORE_CALIBRATION["bounds"]
+    BORNES_EDGE = bounds["edge"]
+    BORNES_PROBA = bounds["proba"]
+    BORNES_ROI = bounds["roi_historique"]
+    BORNES_VOLUME = bounds["volume_historique"]
+    BORNES_GAIN = bounds["gain_potentiel"]
 
     for r in groupe:
         score = (
@@ -184,23 +173,11 @@ def _calculer_scores_groupe(groupe):
 
 
 def _snapshot_score_hydre_pour_match(doc):
-    """🆕 CORRECTIF STOCKAGE (§1) : calcule le VRAI Score Hydre pour un match isolé, au moment présent —
-    en le regroupant avec tous les autres matchs déjà passés en Statut ANALYSE partageant la même date
-    réelle, exactement comme le ferait le Scanner de Marché s'il tournait à cet instant précis.
-    Le score du Scanner est RELATIF à un groupe (normalisé par min/max du jour) : il n'existe donc pas
-    de "score" pour un match totalement isolé sans ce regroupement — on reproduit ici fidèlement le même
-    calcul, sans en modifier la formule ni la logique de sélection.
-    Retourne None si ce match n'est éligible à aucune issue simple (pas de score défini dans ce cas)."""
-    date_reelle = doc.get("Date")
-    if not date_reelle:
+    """Même formule que le scanner, uniquement sur les données du match cible."""
+    if not doc.get("Date"):
         return None
     match_id_cible = f"{doc['HomeTeam']}_{doc['AwayTeam']}_{doc['Date']}"
-
-    fixtures_meme_date = list(col_fixtures.find({"Statut": "ANALYSE", "Date": date_reelle}))
-    # Le match en cours d'analyse peut ne pas encore être en Statut ANALYSE en base au moment de l'appel
-    # (selon l'ordre des opérations) : on l'ajoute explicitement s'il manque, sans le dupliquer.
-    if not any(f.get("_id") == doc.get("_id") for f in fixtures_meme_date):
-        fixtures_meme_date.append(doc)
+    fixtures_meme_date = [doc]
 
     groupe = []
     for d in fixtures_meme_date:
@@ -255,12 +232,12 @@ def _exposition_cash_deja_engagee_par_date(bankroll_totale):
     deja_engage_euros = {}
     if bankroll_totale <= 0:
         return {}
-    for p in col_paris.find({"type_fond": "CASH"}):
-        date_match = str(p.get("date", ""))[:10]
-        if not date_match:
+    for p in col_paris.find({"$or": [{"type_fond": "CASH"}, {"type_ticket": "CASH", "est_combine_freebet": True}]}):
+        if type_fond_effectif(p) != "CASH" or p.get("Resultat_Final") == "ANNULE":
             continue
         mise = float(p.get("mise", 0) or 0)
-        deja_engage_euros[date_match] = deja_engage_euros.get(date_match, 0.0) + mise
+        for date_match in dates_exposition_cash(p):
+            deja_engage_euros[date_match] = deja_engage_euros.get(date_match, 0.0) + mise
     return {d: (m / bankroll_totale) * 100 for d, m in deja_engage_euros.items()}
 
 
@@ -273,6 +250,7 @@ def _scanner_marche_data():
 
     fixtures = list(col_fixtures.find({"Statut": "ANALYSE"}))
     resultats = []
+    division_cache = {}
 
     for doc in fixtures:
         cote_dom = safe_float(doc.get('Cote_Actuelle_Dom', 0))
@@ -300,6 +278,7 @@ def _scanner_marche_data():
         base_info = {
             "id": match_id, "div": doc.get("Div", "Inconnu"), "date": f"{doc['Date']} {doc['Time']}",
             "home_team": doc['HomeTeam'], "away_team": doc['AwayTeam'],
+            "division_warnings": warnings_division(doc, division_cache),
         }
 
         if not issues_qualifiees:
@@ -329,13 +308,12 @@ def _scanner_marche_data():
         en respectant le budget ENCORE DISPONIBLE pour cette date (plafond de 20% moins
         ce qui est déjà engagé en CASH sur cette même date). Modifie 'statut'/'score'/
         'mise_pct' en place. Retourne (mise_unitaire_pct, nb_selectionnes)."""
+        _calculer_scores_groupe(groupe)
         if not groupe or exposition_disponible <= 0:
             for r in groupe:
                 r["statut"] = "POTABLE"
                 r["mise_pct"] = 0.0
             return 0.0, 0
-
-        _calculer_scores_groupe(groupe)
 
         groupe.sort(key=lambda r: r["score"], reverse=True)
 

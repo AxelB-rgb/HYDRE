@@ -8,6 +8,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 .venv/
+.test-deps/
 venv/
 env/
 
@@ -15,6 +16,7 @@ env/
 frontend/node_modules/
 frontend/build/
 frontend/.cache/
+.pnpm-store/
 
 # Tests / coverage
 coverage/

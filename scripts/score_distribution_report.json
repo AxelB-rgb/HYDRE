@@ -1,0 +1,65 @@
+{
+  "bounds": {
+    "edge": [
+      0.735265,
+      34.442456
+    ],
+    "proba": [
+      45.842599,
+      77.28012
+    ],
+    "gain_potentiel": [
+      0.36,
+      1.62
+    ],
+    "roi_historique": [
+      0,
+      30
+    ],
+    "volume_historique": [
+      50,
+      500
+    ]
+  },
+  "calibration": {
+    "before": {
+      "n": 5863,
+      "min": 3.1,
+      "p10": 7.3,
+      "median": 15.4,
+      "p90": 25.8,
+      "max": 51.5,
+      "above40_pct": 0.4
+    },
+    "after": {
+      "n": 5863,
+      "min": 3.3,
+      "p10": 11.4,
+      "median": 29.2,
+      "p90": 51.7,
+      "max": 81.0,
+      "above40_pct": 24.1
+    }
+  },
+  "holdout_2025_2026": {
+    "before": {
+      "n": 1365,
+      "min": 3.7,
+      "p10": 7.1,
+      "median": 14.7,
+      "p90": 24.5,
+      "max": 40.3,
+      "above40_pct": 0.1
+    },
+    "after": {
+      "n": 1365,
+      "min": 3.4,
+      "p10": 10.6,
+      "median": 27.4,
+      "p90": 50.6,
+      "max": 72.0,
+      "above40_pct": 21.6
+    }
+  },
+  "limitation": "Contrôle de distribution, pas validation de rentabilité ni garantie hors échantillon des modèles. ROI/volume neutralisés."
+}

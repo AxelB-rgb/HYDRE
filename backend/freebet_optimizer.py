@@ -17,11 +17,11 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Literal
 
 from backend.auth import require_master, require_any_role
 from backend.config import (
-    col_paris,
+    col_paris, col_historique, col_fixtures, col_parametres, PROFILS_EXPOSITION, MISE_MAX_PCT,
     ISSUE_LABELS_BACK, FREEBET_MAX_COMBINAISONS_CALCULEES, FREEBET_TOP_N_PAR_TAILLE,
     PONDERATION_SCORE_FREEBET, FREEBET_SEUIL_RISQUE_FAIBLE, FREEBET_SEUIL_RISQUE_MOYEN,
     FREEBET_POIDS_INDICE_PROFIL, FREEBET_SEUIL_PROFIL_SAFE, FREEBET_SEUIL_PROFIL_MID,
@@ -34,8 +34,10 @@ from backend.config import (
     KELLY_DAMPENING_DEFAUT, MISE_MIN_FREEBET_COMBI,
 )
 from backend.utils import _cote_est_verrouillee
-from backend.hydre_engine import _scanner_marche_data
+from backend.hydre_engine import _scanner_marche_data, _exposition_cash_deja_engagee_par_date
 from backend.bankroll import _calculer_finances_dict
+from backend.division_warnings import warnings_division
+from backend.settlement import montant_reglement, type_fond_effectif
 
 from backend.hydre_engine import normaliser
 
@@ -61,6 +63,8 @@ def _freebet_candidats_depuis_paris_cash(today_str, now, deja_dans_combo):
     qu'il n'a pas commencé — `deja_dans_combo` n'est plus utilisé pour exclure un match."""
     candidats = []
     for p in col_paris.find({"type_fond": "CASH", "Resultat_Final": {"$exists": False}}):
+        if p.get("est_combine_freebet"):
+            continue  # un ticket combiné n'est jamais un candidat match
         id_match = p.get("id_match")
         if not id_match:
             continue
@@ -89,7 +93,7 @@ def _freebet_candidats_depuis_paris_cash(today_str, now, deja_dans_combo):
             "div": p.get("div", "Inconnu"), "date": date_str, "statut": "SELECTIONNE",
             "issue": issue, "issue_label": ISSUE_LABELS_BACK.get(issue, issue),
             "cote": round(cote, 2), "proba": round(proba, 1), "edge": round(edge, 2),
-            "score": p.get("score") or 0
+            "score": p.get("score") or 0, "division_warnings": warnings_division({"HomeTeam": p.get("home_team"), "AwayTeam": p.get("away_team"), "Date": str(p.get("date", ""))[:10], "Div": p.get("div")})
         })
     return candidats
 
@@ -119,7 +123,7 @@ def _freebet_candidats_liste():
             "id": m["id"], "home_team": m["home_team"], "away_team": m["away_team"],
             "div": m.get("div", "Inconnu"), "date": date_str, "statut": m["statut"],
             "issue": m["issue"], "issue_label": ISSUE_LABELS_BACK.get(m["issue"], m["issue"]),
-            "cote": m["cote"], "proba": m["proba"], "edge": m["edge"], "score": m.get("score", 0)
+            "cote": m["cote"], "proba": m["proba"], "edge": m["edge"], "score": m.get("score", 0), "division_warnings": m.get("division_warnings", [])
         })
 
     # 🆕 Ajout des matchs déjà pris en CASH mais pas encore commencés (données réutilisées,
@@ -190,7 +194,7 @@ def _calculer_base_combo(selections, taille):
 
     proba_implicite_pct = (100.0 / cote_totale) if cote_totale > 0 else 0.0
     edge_pct = (proba_combo * cote_totale - 1) * 100
-    ev_pour_1e = proba_combo * cote_totale - 1
+    ev_pour_1e = proba_combo * (cote_totale - 1)
 
     if proba_combo * 100 >= FREEBET_SEUIL_RISQUE_FAIBLE:
         niveau_risque = "FAIBLE"
@@ -1034,6 +1038,13 @@ def freebet_portefeuille(req: RequeteFreebetCombos):
     finances = _calculer_finances_dict()
     bankroll_cash = finances["total"]
     budget_freebet_disponible = finances["freebets"]["disponible"]
+    config = col_parametres.find_one({"type": "profil_risque"}) or {}
+    exposition_max = PROFILS_EXPOSITION[config.get("profil", "EQUILIBRE")]
+    today = datetime.now().strftime("%Y-%m-%d")
+    exposition = _exposition_cash_deja_engagee_par_date(bankroll_cash).get(today, 0)
+    budget_cash_disponible = max(0.0, min(finances["disponible"], bankroll_cash * max(0.0, exposition_max - exposition) / 100))
+    # Une proposition unique pour les deux moyens de paiement, jamais un solde additionné.
+    budget_tickets_disponible = max(budget_freebet_disponible, budget_cash_disponible)
 
     tous_combos, tailles_ignorees, stats_par_taille, _ = _freebet_calculer_combos(
         candidats, tailles_demandees, bankroll_cash
@@ -1048,6 +1059,8 @@ def freebet_portefeuille(req: RequeteFreebetCombos):
             "nb_candidats": len(candidats), "tailles_calculees": tailles_demandees,
             "tailles_ignorees": tailles_ignorees, "bankroll_cash_reference": bankroll_cash,
             "budget_freebet_disponible": round(budget_freebet_disponible, 2),
+            "budget_cash_disponible": round(budget_cash_disponible, 2),
+            "budget_tickets_disponible": round(budget_tickets_disponible, 2),
             "top_par_profil": {}, "portefeuille_recommande": [], "journal_construction": [],
             "score_portefeuille": _calculer_score_portefeuille([], len(candidats)),
             "mise_totale_recommandee_portefeuille": 0.0
@@ -1063,7 +1076,7 @@ def freebet_portefeuille(req: RequeteFreebetCombos):
         }
 
     portefeuille, journal_construction = _construire_portefeuille_freebet(
-        tous_combos, len(candidats), budget_freebet_disponible
+        tous_combos, len(candidats), budget_tickets_disponible
     )
     score_portefeuille = _calculer_score_portefeuille(portefeuille, len(candidats))
     mise_totale = sum(t["mise_prevue_portefeuille"] for t in portefeuille)
@@ -1074,6 +1087,8 @@ def freebet_portefeuille(req: RequeteFreebetCombos):
         "tailles_ignorees": tailles_ignorees,
         "bankroll_cash_reference": bankroll_cash,
         "budget_freebet_disponible": round(budget_freebet_disponible, 2),
+        "budget_cash_disponible": round(budget_cash_disponible, 2),
+        "budget_tickets_disponible": round(budget_tickets_disponible, 2),
         "top_par_profil": top_par_profil,
         "portefeuille_recommande": portefeuille,
         "journal_construction": journal_construction,
@@ -1137,7 +1152,7 @@ def freebet_combo_manuel(req: RequeteFreebetComboManuel):
     # contrairement au classement automatique (voir _freebet_calculer_combos).
     proba_norm = combo["probabilite_pct"] / 100.0
     edge_norm = max(0.0, min((combo["edge_pct"] + 50.0) / 200.0, 1.0))
-    ev_norm = max(0.0, min((combo["ev_pour_1e"] + 1.0) / 6.0, 1.0))
+    ev_norm = max(0.0, min(combo["ev_pour_1e"] / 6.0, 1.0))
     qualite_norm = combo["qualite_selections"] / 100.0
     cote_norm = max(0.0, min(math.log(max(combo["cote_totale"], 1.0001)) / math.log(500.0), 1.0))
     taille_norm = max(0.0, 1.0 - (taille - 2) / 10.0)
@@ -1182,20 +1197,40 @@ class RequeteValidationCombo(BaseModel):
     probabilite_pct: float = 0.0
     edge_pct: float = 0.0
     bookmaker: str = "WINAMAX"
+    type_ticket: Literal["FREEBET", "CASH"] = "FREEBET"
+
+
+def _verifier_financement_combo(req, finances):
+    mise = req.mise_freebet  # champ historique conservé pour les clients existants
+    if req.type_ticket == "FREEBET":
+        if mise > finances["freebets"]["disponible"]:
+            raise HTTPException(status_code=400, detail="Solde Freebet insuffisant pour ce combiné.")
+        return
+    if mise > finances["disponible"]:
+        raise HTTPException(status_code=400, detail="Solde CASH insuffisant pour ce combiné.")
+    if mise > finances["total"] * MISE_MAX_PCT / 100 + 1e-9:
+        raise HTTPException(status_code=400, detail=f"Mise CASH limitée à {MISE_MAX_PCT}% de la bankroll par ticket.")
+    config = col_parametres.find_one({"type": "profil_risque"}) or {}
+    plafond = PROFILS_EXPOSITION[config.get("profil", "EQUILIBRE")]
+    exposition = _exposition_cash_deja_engagee_par_date(finances["total"])
+    # Toute la mise est exposée à chaque date de jeu, une seule fois par date.
+    for date in {s.date[:10] for s in req.selections}:
+        if exposition.get(date, 0) + mise / finances["total"] * 100 > plafond + 1e-9:
+            raise HTTPException(status_code=400, detail=f"Plafond d'exposition CASH atteint pour le {date}.")
 
 
 @router.post("/valider_combo_freebet", dependencies=[Depends(require_master)])
 def valider_combo_freebet(req: RequeteValidationCombo):
     if req.taille < 2 or len(req.selections) != req.taille:
         raise HTTPException(status_code=400,
-                             detail="Un combiné Freebet doit contenir au moins 2 sélections, cohérent avec la taille annoncée.")
+                             detail="Un combiné doit contenir au moins 2 sélections, cohérent avec la taille annoncée.")
 
     ids = [s.id_match for s in req.selections]
     if len(set(ids)) != len(ids):
         raise HTTPException(status_code=400, detail="Un même match ne peut pas apparaître deux fois dans un combiné.")
 
-    if req.mise_freebet <= 0:
-        raise HTTPException(status_code=400, detail="Mise Freebet invalide.")
+    if not math.isfinite(req.mise_freebet) or req.mise_freebet <= 0:
+        raise HTTPException(status_code=400, detail="Mise invalide.")
 
     # 🆕 §8 : si UNE des sélections est à moins de 2h de son coup d'envoi, la cote totale
     # calculée fait foi pour l'ensemble du combiné — plus de correction manuelle possible.
@@ -1203,22 +1238,22 @@ def valider_combo_freebet(req: RequeteValidationCombo):
         raise HTTPException(status_code=400, detail="🔒 Cote verrouillée : au moins une sélection est à moins de 2h de son coup d'envoi.")
 
     finances_actuelles = _calculer_finances_dict()
-    if req.mise_freebet > finances_actuelles["freebets"]["disponible"]:
-        raise HTTPException(status_code=400, detail="Solde Freebet insuffisant pour ce combiné.")
+    _verifier_financement_combo(req, finances_actuelles)
 
     combo_id = f"COMBO_{uuid.uuid4().hex[:10]}"
     resume_matchs = " | ".join(f"{s.home_team}-{s.away_team} ({s.issue})" for s in req.selections)
 
     doc_paris = {
         "id_match": combo_id,
-        "home_team": f"🎫 Combiné Freebet x{req.taille}",
+        "home_team": f"🎫 Combiné {req.type_ticket} x{req.taille}",
         "away_team": resume_matchs,
         "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "div": "FREEBET-COMBI",
+        "div": f"{req.type_ticket}-COMBI",
         "choix_pari": f"COMBI-{req.taille}",
         "cote_choisie": req.cote_totale_reelle,
         "mise": req.mise_freebet,
-        "type_fond": "FREEBET",
+        "type_fond": req.type_ticket,
+        "type_ticket": req.type_ticket,
         "bookmaker": req.bookmaker,
         "Date_Engagement": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         # Champs propres au combiné, ignorés sans risque par le dashboard existant :
@@ -1232,20 +1267,38 @@ def valider_combo_freebet(req: RequeteValidationCombo):
         "selections_combine": [s.dict() for s in req.selections],
     }
     col_paris.insert_one(doc_paris)
-    return {"message": "✅ Combiné Freebet verrouillé — direction PARIS JOUÉS.", "combo_id": combo_id}
+    return {"message": f"✅ Combiné {req.type_ticket} verrouillé — direction PARIS JOUÉS.", "combo_id": combo_id}
 
 
 @router.get("/combos_freebet_en_cours", dependencies=[Depends(require_any_role)])
 def combos_freebet_en_cours():
     cursor = col_paris.find({"est_combine_freebet": True, "Resultat_Final": {"$exists": False}}).sort("Date_Engagement", -1)
     combos = []
+    progression_cache = {}
+    division_cache = {}
     for doc in cursor:
+        selections = []
+        for leg in doc.get("selections_combine", []):
+            mid = leg["id_match"]
+            if mid not in progression_cache:
+                pari = col_paris.find_one({"id_match": mid, "Resultat_Final": {"$ne": "ANNULE"}})
+                match_query = {"HomeTeam": leg.get("home_team"), "AwayTeam": leg.get("away_team"), "Date": str(leg.get("date", ""))[:10]}
+                historique = col_historique.find_one(match_query, {"FTR": 1})
+                fixture = col_fixtures.find_one(match_query, {"Statut": 1})
+                joue = bool(historique and historique.get("FTR") in ("H", "D", "A"))
+                progression_cache[mid] = {"valide": bool(pari or joue or (fixture and fixture.get("Statut") == "JOUE")),
+                                          "joue": joue, "resultat": historique.get("FTR") if joue else None}
+            selections.append({**leg, **progression_cache[mid], "division_warnings": warnings_division({
+                "HomeTeam": leg.get("home_team"), "AwayTeam": leg.get("away_team"), "Date": str(leg.get("date", ""))[:10], "Div": leg.get("div")}, division_cache)})
         combos.append({
             "id_match": doc["id_match"], "home_team": doc.get("home_team"), "away_team": doc.get("away_team"),
             "date": doc.get("date"), "taille": doc.get("taille_combine"), "cote_choisie": doc.get("cote_choisie"),
             "mise": doc.get("mise"), "score": doc.get("score_combine"), "niveau_risque": doc.get("niveau_risque_combine"),
+            "type_ticket": type_fond_effectif(doc), "type_fond": type_fond_effectif(doc),
             "probabilite_pct": doc.get("probabilite_pct_combine"), "edge_pct": doc.get("edge_pct_combine"),
-            "selections": doc.get("selections_combine", []),
+            "selections": selections,
+            "nb_valides": sum(s["valide"] for s in selections),
+            "nb_total": len(selections),
             # 🆕 §5 : bookmaker réellement sélectionné lors de la validation du combiné.
             "bookmaker": doc.get("bookmaker", "WINAMAX")
         })
@@ -1263,8 +1316,8 @@ class RequeteClotureCombo(BaseModel):
 def cloturer_combo_freebet(req: RequeteClotureCombo):
     doc = col_paris.find_one({"id_match": req.id_match, "est_combine_freebet": True})
     if not doc:
-        raise HTTPException(status_code=404, detail="Combiné Freebet introuvable.")
+        raise HTTPException(status_code=404, detail="Combiné introuvable.")
     col_paris.update_one({"id_match": req.id_match}, {
-        "$set": {"Resultat_Final": req.resultat, "Montant_Retour": req.montant_retour, "Cote_Cloture": req.cote_cloture,
+        "$set": {"Resultat_Final": req.resultat, "Montant_Retour": montant_reglement(doc, req.resultat, req.montant_retour), "Cote_Cloture": req.cote_cloture,
                  "Date_Cloture": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}})
-    return {"message": "Combiné Freebet clôturé et archivé."}
+    return {"message": "Combiné clôturé et archivé."}

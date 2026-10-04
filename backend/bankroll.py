@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from backend.auth import require_master, require_any_role
 from backend.config import col_parametres, col_paris, col_mouvements, PROFILS_EXPOSITION
 from backend.hydre_engine import RESULTATS_REGLES
+from backend.settlement import retour_net, type_fond_effectif
 
 router = APIRouter()
 
@@ -25,11 +26,11 @@ def _pnl_cash_pari(p):
     profit cash = le montant de retour réellement perçu, en intégralité). Pour un pari CASH
     (mise réellement engagée, y compris les paris sans type_fond explicite — anciens paris,
     toujours CASH par défaut), le P&L reste retour - mise, comme avant."""
-    retour = float(p.get("Montant_Retour", 0) or 0)
+    retour = retour_net(p)
     mise = float(p.get("mise", 0) or 0)
     if p.get("Resultat_Final") == "ANNULE":
         return 0.0
-    if p.get("type_fond", "CASH") == "FREEBET":
+    if type_fond_effectif(p) == "FREEBET":
         return retour
     return retour - mise
 
@@ -53,14 +54,14 @@ def _calculer_finances_dict():
 
     # "En cours" = pas encore réglé du tout (ni gagné/perdu/cashout, ni annulé).
     paris_en_cours = list(col_paris.find({"Resultat_Final": {"$exists": False}}))
-    capital_engage = sum(float(p.get("mise", 0) or 0) for p in paris_en_cours if p.get("type_fond", "CASH") == "CASH")
-    freebets_engage = sum(float(p.get("mise", 0) or 0) for p in paris_en_cours if p.get("type_fond", "CASH") == "FREEBET")
+    capital_engage = sum(float(p.get("mise", 0) or 0) for p in paris_en_cours if type_fond_effectif(p) == "CASH")
+    freebets_engage = sum(float(p.get("mise", 0) or 0) for p in paris_en_cours if type_fond_effectif(p) == "FREEBET")
 
     # 🆕 FB ACQUIS / FB ENGAGÉ / FB DISPO (voir §2 et §3 du cahier des charges) :
     # - FB ACQUIS ne bouge PAS quand un ticket est simplement bloqué/engagé ;
     # - FB ACQUIS ne diminue QUE quand un ticket est définitivement réglé (GAGNÉ/PERDU/CASHOUT) ;
     # - Un ticket ANNULÉ restitue intégralement la freebet (n'affecte jamais FB ACQUIS).
-    tous_paris_freebet_regles = list(col_paris.find({"type_fond": "FREEBET", "Resultat_Final": {"$in": list(RESULTATS_REGLES)}}))
+    tous_paris_freebet_regles = [p for p in paris_clotures if type_fond_effectif(p) == "FREEBET"]
     freebets_consommees_definitivement = sum(float(p.get("mise", 0) or 0) for p in tous_paris_freebet_regles)
     freebets_acquis_restant = freebets_credit_total - freebets_consommees_definitivement
     freebets_disponible = freebets_acquis_restant - freebets_engage

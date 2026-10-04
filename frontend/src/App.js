@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { ComposedChart, Line, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area, ScatterChart, Scatter, ZAxis, Legend, ReferenceLine } from 'recharts';
 import './App.css';
+import { selectionFunnel, comboProgress } from './matchMetrics';
+import { summarizeCombos, comboType } from './comboStats';
+import ComboDashboard from './ComboDashboard';
 import { login as apiLogin, chargerSession, effacerSession } from './auth';
 
 // UTILITAIRES TEMPORELS
@@ -106,6 +109,26 @@ function App() {
   // --- CÂBLAGE DU CERVEAU (API RENDER) ---
   const API_URL = "https://moteur-hydre.onrender.com";
 
+  const [requetesServeur, setRequetesServeur] = useState(0);
+  const requeteServeur = async (url, options = {}) => {
+    const polling = /\/(freebet_portefeuille_progression|statut_usine)$/.test(url);
+    if (!polling) setRequetesServeur(n => n + 1);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15 * 60 * 1000);
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      await response.clone().arrayBuffer();
+      if (response.ok && options.method === 'POST' && !/\/(login|freebet_combos|freebet_portefeuille|freebet_combo_manuel)$/.test(url)) {
+        chargerDashboard();
+        if (/\/(valider_pari|cloturer_pari|annuler_pari_erreur|valider_combo_freebet|cloturer_combo_freebet)$/.test(url)) chargerCombosFreebetEnCours();
+      }
+      return response;
+    } finally {
+      clearTimeout(timeout);
+      if (!polling) setRequetesServeur(n => Math.max(0, n - 1));
+    }
+  };
+
   const getHeaders = () => ({
     'Content-Type': 'application/json',
     'X-Hydre-Token': token
@@ -115,7 +138,7 @@ function App() {
     e.preventDefault();
     setErreurConnexion("");
     try {
-      const { role: roleObtenu, token: tokenObtenu } = await apiLogin(API_URL, inputMotDePasse);
+      const { role: roleObtenu, token: tokenObtenu } = await apiLogin(API_URL, inputMotDePasse, requeteServeur);
       setToken(tokenObtenu);
       setRole(roleObtenu);
       setEstConnecte(true);
@@ -208,6 +231,7 @@ function App() {
   const [freebetComboOuvert, setFreebetComboOuvert] = useState(null);
   const [freebetCoteReelle, setFreebetCoteReelle] = useState("");
   const [freebetMise, setFreebetMise] = useState("");
+  const [comboTypeTicket, setComboTypeTicket] = useState("FREEBET");
   const [combosFreebetEnCours, setCombosFreebetEnCours] = useState([]);
   // 🆕 PORTEFEUILLE FREEBET (diversification multi-profils)
   const [freebetSousVue, setFreebetSousVue] = useState('CLASSEMENT'); // 'CLASSEMENT' | 'PORTEFEUILLE' | 'CONSTRUCTEUR'
@@ -252,7 +276,7 @@ function App() {
   // backend (token non expiré) ; sinon, déconnexion propre plutôt que des erreurs 403 en boucle.
   useEffect(() => {
     if (estConnecte) {
-      fetch(`${API_URL}/whoami`, { headers: getHeaders() })
+      requeteServeur(`${API_URL}/whoami`, { headers: getHeaders() })
         .then(res => { if (!res.ok) seDeconnecter(); })
         .catch(() => {});
     }
@@ -260,7 +284,11 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (estConnecte && (vueActuelle === 'DASHBOARD' || vueActuelle === 'HOME' || vueActuelle === 'BANKROLL' || vueActuelle === 'DATA')) chargerDashboard();
+    if (estConnecte && (vueActuelle === 'DASHBOARD' || vueActuelle === 'HOME' || vueActuelle === 'BANKROLL' || vueActuelle === 'DATA')) {
+      chargerDashboard();
+      const interval = setInterval(chargerDashboard, 60000);
+      return () => clearInterval(interval);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vueActuelle, estConnecte]);
 
@@ -291,6 +319,8 @@ function App() {
   useEffect(() => {
     if (estConnecte && vueActuelle === 'TRADING' && activeTab === 'JOUE') {
       chargerCombosFreebetEnCours();
+      const interval = setInterval(chargerCombosFreebetEnCours, 60000);
+      return () => clearInterval(interval);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [estConnecte, vueActuelle, activeTab]);
@@ -300,7 +330,7 @@ function App() {
     if (statutUsine.statut === 'en_cours') {
       interval = setInterval(async () => {
         try {
-          const res = await fetch(`${API_URL}/statut_usine`, {
+          const res = await requeteServeur(`${API_URL}/statut_usine`, {
             headers: getHeaders()
           });
           if (res.ok) {
@@ -326,7 +356,7 @@ function App() {
   }, [statutUsine.statut]);
 
   const chargerDonneesTrading = () => {
-    fetch(`${API_URL}/finances`, { headers: getHeaders() })
+    requeteServeur(`${API_URL}/finances`, { headers: getHeaders() })
       .then(res => {
           if(!res.ok) throw new Error("Accès Refusé API");
           return res.json();
@@ -336,7 +366,7 @@ function App() {
       })
       .catch(err => console.error(err));
 
-    fetch(`${API_URL}/prochains_matchs`, { headers: getHeaders() })
+    requeteServeur(`${API_URL}/prochains_matchs`, { headers: getHeaders() })
       .then(res => res.json())
       .then(data => {
       if (data.matchs) {
@@ -349,14 +379,14 @@ function App() {
   };
 
   const chargerDashboard = () => {
-      fetch(`${API_URL}/statistiques_dashboard`, { headers: getHeaders() })
+      requeteServeur(`${API_URL}/statistiques_dashboard`, { headers: getHeaders() })
       .then(res => res.json())
       .then(data => setDashboardData(data))
       .catch(err => console.error(err));
   };
 
   const chargerConfigProfil = () => {
-    fetch(`${API_URL}/config_profil`, { headers: getHeaders() })
+    requeteServeur(`${API_URL}/config_profil`, { headers: getHeaders() })
       .then(res => res.json())
       .then(data => setProfilRisque(data.profil || 'EQUILIBRE'))
       .catch(err => console.error(err));
@@ -364,7 +394,7 @@ function App() {
 
   const changerProfilRisque = async (nouveauProfil) => {
     try {
-      const res = await fetch(`${API_URL}/config_profil`, {
+      const res = await requeteServeur(`${API_URL}/config_profil`, {
         method: 'POST', headers: getHeaders(), body: JSON.stringify({ profil: nouveauProfil })
       });
       if (!res.ok) throw new Error("Erreur API");
@@ -377,7 +407,7 @@ function App() {
   };
 
   const chargerScanner = () => {
-    fetch(`${API_URL}/scanner_marche`, { headers: getHeaders() })
+    requeteServeur(`${API_URL}/scanner_marche`, { headers: getHeaders() })
       .then(res => res.json())
       .then(data => setScannerData(data))
       .catch(err => console.error(err));
@@ -389,7 +419,7 @@ function App() {
   };
 
   const chargerLedger = () => {
-    fetch(`${API_URL}/mouvements_bankroll`, { headers: getHeaders() })
+    requeteServeur(`${API_URL}/mouvements_bankroll`, { headers: getHeaders() })
       .then(res => res.json())
       .then(data => {
         if (data.mouvements) setLedgerBankroll(data.mouvements);
@@ -399,14 +429,14 @@ function App() {
 
   // 🆕 FREEBET OPTIMIZER — fonctions
   const chargerFreebetCandidats = () => {
-    fetch(`${API_URL}/freebet_candidats`, { headers: getHeaders() })
+    requeteServeur(`${API_URL}/freebet_candidats`, { headers: getHeaders() })
       .then(res => res.json())
       .then(data => setFreebetCandidats(data.candidats || []))
       .catch(err => console.error(err));
   };
 
   const chargerCombosFreebetEnCours = () => {
-    fetch(`${API_URL}/combos_freebet_en_cours`, { headers: getHeaders() })
+    requeteServeur(`${API_URL}/combos_freebet_en_cours`, { headers: getHeaders() })
       .then(res => res.json())
       .then(data => setCombosFreebetEnCours(data.combos || []))
       .catch(err => console.error(err));
@@ -423,7 +453,7 @@ function App() {
     setFreebetFiltreTaille('TOUS');
     setFreebetSousVue('CLASSEMENT');
     try {
-      const res = await fetch(`${API_URL}/freebet_combos`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ tailles: freebetTaillesChoisies }) });
+      const res = await requeteServeur(`${API_URL}/freebet_combos`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ tailles: freebetTaillesChoisies }) });
       if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || "Erreur API"); }
       const data = await res.json();
       setFreebetResultats(data);
@@ -445,23 +475,27 @@ function App() {
     setFreebetProgression(null);
     setFreebetSousVue('PORTEFEUILLE');
 
+    let rechercheActive = true;
     const intervalleProgression = setInterval(() => {
-      fetch(`${API_URL}/freebet_portefeuille_progression`, { headers: getHeaders() })
+      requeteServeur(`${API_URL}/freebet_portefeuille_progression`, { headers: getHeaders() })
         .then(res => res.ok ? res.json() : null)
-        .then(data => { if (data) setFreebetProgression(data); })
+        .then(data => { if (data && rechercheActive) setFreebetProgression(data); })
         .catch(() => {});
     }, 600);
 
     try {
-      const res = await fetch(`${API_URL}/freebet_portefeuille`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ tailles: freebetTaillesChoisies }) });
+      const res = await requeteServeur(`${API_URL}/freebet_portefeuille`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ tailles: freebetTaillesChoisies }) });
       if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || "Erreur API"); }
       const data = await res.json();
+      rechercheActive = false;
       setFreebetPortefeuille(data);
       setFreebetProgression(prev => ({
         ...(prev || {}), en_cours: false, termine: true, pourcentage: 100,
         etape: "Recherche terminée.", nb_tickets_retenus: (data.portefeuille_recommande || []).length
       }));
     } catch (e) {
+      rechercheActive = false;
+      setFreebetProgression(null);
       alert(`❌ ${e.message}`);
     }
     clearInterval(intervalleProgression);
@@ -489,12 +523,12 @@ function App() {
   const viderConstructeur = () => { setConstructeurSelectionIds([]); setConstructeurCombo(null); setConstructeurErreur(''); };
 
   useEffect(() => {
-    if (constructeurSelectionIds.length < 2) { setConstructeurCombo(null); setConstructeurErreur(''); return; }
+    if (constructeurSelectionIds.length < 2) { setConstructeurCombo(null); setConstructeurErreur(''); setConstructeurChargement(false); return; }
     let annule = false;
     setConstructeurChargement(true);
     (async () => {
       try {
-        const res = await fetch(`${API_URL}/freebet_combo_manuel`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ ids: constructeurSelectionIds }) });
+        const res = await requeteServeur(`${API_URL}/freebet_combo_manuel`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ ids: constructeurSelectionIds }) });
         if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || "Erreur API"); }
         const data = await res.json();
         if (!annule) { setConstructeurCombo(data.combo); setConstructeurErreur(''); }
@@ -509,6 +543,7 @@ function App() {
 
   const ouvrirValidationCombo = (combo) => {
     setFreebetComboOuvert(combo);
+    setComboTypeTicket("FREEBET");
     setFreebetCoteReelle(combo.cote_totale);
     setFreebetMise(combo.kelly && combo.kelly.mise_recommandee != null ? combo.kelly.mise_recommandee : "");
   };
@@ -517,8 +552,9 @@ function App() {
     const combo = freebetComboOuvert;
     if (!combo) return;
     const mise = parseFloat(freebetMise);
-    if (!mise || mise <= 0) { alert("⚠️ Renseigne une mise Freebet valide."); return; }
-    if (mise > finances.freebets.disponible) { alert("Solde FREEBET insuffisant !"); return; }
+    if (!mise || mise <= 0) { alert("⚠️ Renseigne une mise valide."); return; }
+    const disponible = comboTypeTicket === 'CASH' ? finances.disponible : finances.freebets.disponible;
+    if (mise > disponible) { alert(`Solde ${comboTypeTicket} insuffisant !`); return; }
     // 🆕 §8 : si une sélection est à moins de 2h de son coup d'envoi, impossible de corriger la cote.
     const comboVerrouille = combo.selections.some(s => coteEstVerrouillee(s.date));
     const coteReelle = comboVerrouille ? combo.cote_totale : (parseFloat(freebetCoteReelle) || combo.cote_totale);
@@ -532,6 +568,7 @@ function App() {
       cote_totale_calculee: combo.cote_totale,
       cote_totale_reelle: coteReelle,
       mise_freebet: mise,
+      type_ticket: comboTypeTicket,
       score: combo.score,
       niveau_risque: combo.niveau_risque,
       probabilite_pct: combo.probabilite_pct,
@@ -540,9 +577,9 @@ function App() {
     };
 
     try {
-      const res = await fetch(`${API_URL}/valider_combo_freebet`, { method: 'POST', headers: getHeaders(), body: JSON.stringify(payload) });
+      const res = await requeteServeur(`${API_URL}/valider_combo_freebet`, { method: 'POST', headers: getHeaders(), body: JSON.stringify(payload) });
       if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || "Erreur API"); }
-      alert("✅ Combiné Freebet verrouillé, direction PARIS JOUÉS.");
+      alert(`✅ Combiné ${comboTypeTicket} verrouillé, direction PARIS JOUÉS.`);
       setFreebetComboOuvert(null);
       setFreebetResultats(null);
       chargerDonneesTrading();
@@ -557,17 +594,17 @@ function App() {
       setClotureComboEnCours({ id: combo.id_match, type: resultatTir }); return;
     }
     if (resultatTir === "ANNULE") {
-      if (!window.confirm("⚠️ Annuler ce combiné Freebet ? La freebet engagée sera restaurée. Aucun profit ni perte ne sera comptabilisé.")) return;
+      if (!window.confirm(`⚠️ Annuler ce combiné ${comboType(combo)} ? La mise sera restituée au solde ${comboType(combo)}. Aucun profit ni perte ne sera comptabilisé.`)) return;
     }
     let retourFinal = 0;
-    if (resultatTir === "GAGNE") { retourFinal = combo.mise * combo.cote_choisie; }
+    if (resultatTir === "GAGNE") { retourFinal = combo.mise * (combo.cote_choisie - (comboType(combo) === 'FREEBET' ? 1 : 0)); }
     else if (resultatTir === "PERDU") { retourFinal = 0; }
     else if (resultatTir === "ANNULE") { retourFinal = combo.mise; } // restitution intégrale, PnL = 0
     else { retourFinal = montant !== undefined ? parseFloat(montant) : 0; } // CASHOUT
 
     const coteClotureSaisie = cotesClotureCombo[combo.id_match] ? parseFloat(cotesClotureCombo[combo.id_match]) : 0;
 
-    await fetch(`${API_URL}/cloturer_combo_freebet`, {
+    await requeteServeur(`${API_URL}/cloturer_combo_freebet`, {
       method: 'POST', headers: getHeaders(),
       body: JSON.stringify({ id_match: combo.id_match, resultat: resultatTir, montant_retour: parseFloat(retourFinal.toFixed(2)), cote_cloture: coteClotureSaisie })
     });
@@ -578,7 +615,7 @@ function App() {
 
   const initialiserBankroll = async () => {
     if (!inputCapital) return;
-    await fetch(`${API_URL}/init_bankroll`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ capital: parseFloat(inputCapital) }) });
+    await requeteServeur(`${API_URL}/init_bankroll`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ capital: parseFloat(inputCapital) }) });
     chargerDonneesTrading();
     chargerLedger();
   };
@@ -588,7 +625,7 @@ function App() {
     if (isNaN(val) || val <= 0) return;
     if (!window.confirm(`💰 Injecter ${val.toFixed(2)} € CASH ?`)) return;
     try {
-      const res = await fetch(`${API_URL}/mouvement_bankroll`, {
+      const res = await requeteServeur(`${API_URL}/mouvement_bankroll`, {
         method: 'POST', headers: getHeaders(),
         body: JSON.stringify({ type: 'DEPOT', montant: val, label: labelDepot })
       });
@@ -609,7 +646,7 @@ function App() {
     if (val > finances.disponible) { alert("❌ ERREUR : Fonds insuffisants."); return; }
     if (!window.confirm(`💸 Extraire ${val.toFixed(2)} € CASH vers ton compte bancaire ?`)) return;
     try {
-      const res = await fetch(`${API_URL}/mouvement_bankroll`, {
+      const res = await requeteServeur(`${API_URL}/mouvement_bankroll`, {
         method: 'POST', headers: getHeaders(),
         body: JSON.stringify({ type: 'RETRAIT', montant: val, label: labelRetrait })
       });
@@ -629,7 +666,7 @@ function App() {
     if (isNaN(val) || val <= 0) return;
     if (!window.confirm(`🎁 Ajouter ${val.toFixed(2)} € en FREEBETS ?`)) return;
     try {
-      const res = await fetch(`${API_URL}/mouvement_bankroll`, {
+      const res = await requeteServeur(`${API_URL}/mouvement_bankroll`, {
         method: 'POST', headers: getHeaders(),
         body: JSON.stringify({ type: 'FREEBET', montant: val, label: labelFreebet })
       });
@@ -647,7 +684,7 @@ function App() {
   const handleCoteChange = (matchId, type, valeur) => { setCotesActuelles(prev => ({ ...prev, [matchId]: { ...prev[matchId], [type]: valeur } })); };
 
   const resetMatch = async (match) => {
-    await fetch(`${API_URL}/reset_match`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ home_team: match.home_team, away_team: match.away_team }) });
+    await requeteServeur(`${API_URL}/reset_match`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ home_team: match.home_team, away_team: match.away_team }) });
     if(resultat?.matchObj?.id === match.id) setResultat(null);
     chargerDonneesTrading();
     chargerScanner();
@@ -659,7 +696,7 @@ function App() {
     setLoadingId(match.id);
     const payload = { home_team: match.home_team, away_team: match.away_team, cote_ouverture_dom: match.cote_ouv_dom, cote_actuelle_dom: parseFloat(cotes.dom), cote_ouverture_nul: match.cote_ouv_nul, cote_actuelle_nul: parseFloat(cotes.nul), cote_ouverture_ext: match.cote_ouv_ext, cote_actuelle_ext: parseFloat(cotes.ext) };
     try {
-      const response = await fetch(`${API_URL}/analyser`, { method: 'POST', headers: getHeaders(), body: JSON.stringify(payload) });
+      const response = await requeteServeur(`${API_URL}/analyser`, { method: 'POST', headers: getHeaders(), body: JSON.stringify(payload) });
       const data = await response.json();
       setResultat({ ...data, matchObj: match });
       setChoixPari(""); setCoteDC(""); setTypeFond("CASH"); setCoteReelleOverride(""); chargerDonneesTrading(); chargerScanner();
@@ -712,7 +749,7 @@ function App() {
     }
 
     try {
-      const res = await fetch(`${API_URL}/valider_pari`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ id_match: match.id, home_team: match.home_team, away_team: match.away_team, date: match.date, div: match.div || "Inconnu", choix_pari: choixPari, cote_choisie: coteFinale, cote_calculee: coteCalculee, mise: miseFinale, type_fond: typeFond, bookmaker: bookmakerChoisi, edge: edgeChoisi, score: scoreChoisi }) });
+      const res = await requeteServeur(`${API_URL}/valider_pari`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ id_match: match.id, home_team: match.home_team, away_team: match.away_team, date: match.date, div: match.div || "Inconnu", choix_pari: choixPari, cote_choisie: coteFinale, cote_calculee: coteCalculee, mise: miseFinale, type_fond: typeFond, bookmaker: bookmakerChoisi, edge: edgeChoisi, score: scoreChoisi }) });
       if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || "Erreur API"); }
       setResultat(null); setCoteReelleOverride(""); chargerDonneesTrading(); chargerScanner(); alert(`Transaction ${typeFond} verrouillée.`);
     } catch (e) {
@@ -743,7 +780,7 @@ function App() {
 
     const coteClotureSaisie = cotesCloture[match.id] ? parseFloat(cotesCloture[match.id]) : 0;
 
-    await fetch(`${API_URL}/cloturer_pari`, {
+    await requeteServeur(`${API_URL}/cloturer_pari`, {
       method: 'POST', headers: getHeaders(),
       body: JSON.stringify({ id_match: match.id, home_team: match.home_team, away_team: match.away_team, resultat: resultatTir, montant_retour: parseFloat(retourFinal.toFixed(2)), cote_cloture: coteClotureSaisie })
     });
@@ -755,7 +792,7 @@ function App() {
 
   const annulerPariErreur = async (match) => {
     if(!window.confirm("⚠️ Annuler le trade et renvoyer au sas ?")) return;
-    await fetch(`${API_URL}/annuler_pari_erreur`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ id_match: match.id, home_team: match.home_team, away_team: match.away_team }) });
+    await requeteServeur(`${API_URL}/annuler_pari_erreur`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ id_match: match.id, home_team: match.home_team, away_team: match.away_team }) });
     setExpandedId(null); chargerDonneesTrading(); chargerScanner();
   };
 
@@ -767,7 +804,7 @@ function App() {
       return;
     }
     try {
-      const res = await fetch(`${API_URL}/modifier_pari`, {
+      const res = await requeteServeur(`${API_URL}/modifier_pari`, {
           method: 'POST',
           headers: getHeaders(),
           body: JSON.stringify({ id_match: match.id, home_team: match.home_team, away_team: match.away_team, nouvelle_cote: nouvelleCote, nouvelle_mise: parseFloat(editMise) })
@@ -787,7 +824,7 @@ function App() {
         return m.statut === 'ANALYSE' && m.derniere_analyse > 0 && ageSec > 7200;
     });
     for (const match of matchsAPurger) {
-        await fetch(`${API_URL}/reset_match`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ home_team: match.home_team, away_team: match.away_team }) });
+        await requeteServeur(`${API_URL}/reset_match`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ home_team: match.home_team, away_team: match.away_team }) });
     }
     if(resultat) setResultat(null);
     alert(`✅ ${matchsAPurger.length} matchs purgés.`); chargerDonneesTrading(); chargerScanner();
@@ -830,7 +867,9 @@ function App() {
   const genererDashboardFiltre = () => {
     if (!dashboardData) return null;
     let historyTotal = dashboardData.historique || [];
-    const liguesDisponibles = [...new Set(historyTotal.map(p => p.div || "Inconnu"))].sort();
+    const liguesDisponibles = [...new Set([
+      ...historyTotal, ...(dashboardData.matchs_analyses || []), ...(dashboardData.matchs_selectionnes || [])
+    ].map(p => p.div || "Inconnu"))].sort();
 
     let history = historyTotal;
     if (dashDateDebut) history = history.filter(p => p.date >= dashDateDebut);
@@ -849,7 +888,7 @@ function App() {
     // entrent que si l'utilisateur choisit explicitement de les inclure. Les statistiques
     // spécifiques aux freebets (plus bas) restent, elles, TOUJOURS calculées sur historyStats
     // en entier, quel que soit ce réglage.
-    const historyStatsGenerales = dashInclureFreebets ? historyStats : historyStats.filter(p => !p.est_combine);
+    const historyStatsGenerales = dashInclureFreebets ? historyStats : historyStats.filter(p => !p.est_combine || comboType(p) === 'CASH');
 
     let tMise = 0, tRetour = 0, tGagnes = 0, tCotes = 0, tClv = 0, countClv = 0;
     let tMiseJour = 0, tRetourJour = 0;
@@ -875,7 +914,8 @@ function App() {
     // Un combiné reste UN SEUL ticket financier (§14) — jamais recompté par sélection.
     const statsTypePari = {
       SIMPLE: { mise: 0, pnl: 0, count: 0, wins: 0 },
-      COMBINE: { mise: 0, pnl: 0, count: 0, wins: 0 }
+      COMBINE: { mise: 0, pnl: 0, count: 0, wins: 0 },
+      COMBINE_CASH: { mise: 0, pnl: 0, count: 0, wins: 0 }
     };
     const statsTailleCombine = {};
 
@@ -1051,11 +1091,11 @@ function App() {
     // statistiques dédiées aux combinés Freebet, qui doivent rester disponibles quel que
     // soit le mode d'affichage choisi pour les statistiques générales ci-dessus.
     historyStats.forEach(p => {
-      const typeKey = p.est_combine ? 'COMBINE' : 'SIMPLE';
+      const typeKey = p.est_combine ? (comboType(p) === 'CASH' ? 'COMBINE_CASH' : 'COMBINE') : 'SIMPLE';
       statsTypePari[typeKey].mise += p.mise; statsTypePari[typeKey].pnl += p.pnl; statsTypePari[typeKey].count += 1;
       if (p.resultat === 'GAGNE') statsTypePari[typeKey].wins += 1;
 
-      if (p.est_combine && p.taille_combine) {
+      if (p.est_combine && comboType(p) === 'FREEBET' && p.taille_combine) {
         const t = String(p.taille_combine);
         if (!statsTailleCombine[t]) statsTailleCombine[t] = { mise: 0, pnl: 0, count: 0, wins: 0 };
         statsTailleCombine[t].mise += p.mise; statsTailleCombine[t].pnl += p.pnl; statsTailleCombine[t].count += 1;
@@ -1064,7 +1104,7 @@ function App() {
 
       // 🆕 V2.1 §5/§7/§8 : combinés Freebet uniquement (jamais les paris simples, jamais dupliqué —
       // un combiné reste un seul ticket, comme dans statsTailleCombine ci-dessus).
-      if (p.est_combine) {
+      if (p.est_combine && comboType(p) === 'FREEBET') {
         nbCombinesFreebet += 1;
         freebetsUtilisees += p.mise;
         gainsFreebet += p.retour;
@@ -1223,17 +1263,14 @@ function App() {
     // plus de journal d'analyses). Toujours filtré par les mêmes filtres période/ligue du Dashboard
     // (sur la date réelle du match, pas la date du pari), avec repli sur le total saison si aucune
     // période n'est choisie — cohérent avec l'objectif "100 matchs analysés / 15 sélectionnés / 15%".
-    let matchsAnalysesListe = dashboardData.matchs_analyses || [];
-    if (dashDateDebut) matchsAnalysesListe = matchsAnalysesListe.filter(a => a.date >= dashDateDebut);
-    if (dashDateFin) matchsAnalysesListe = matchsAnalysesListe.filter(a => a.date <= dashDateFin);
-    if (dashFiltreLigue) matchsAnalysesListe = matchsAnalysesListe.filter(a => (a.div || "Inconnu") === dashFiltreLigue);
-    const matchsAnalyses = matchsAnalysesListe.length;
-    const matchsSelectionnes = historyStats.length;
-    const tauxSelection = matchsAnalyses > 0 ? (matchsSelectionnes / matchsAnalyses) * 100 : null;
+    const { matchsAnalyses, matchsSelectionnes, tauxSelection } = selectionFunnel(
+      dashboardData.matchs_analyses || [], dashboardData.matchs_selectionnes || [],
+      { debut: dashDateDebut, fin: dashDateFin, ligue: dashFiltreLigue }
+    );
 
     return {
       // 🆕 DASHBOARD CASH / FREEBET
-      modeStatsFreebet: dashInclureFreebets ? 'SIMPLES_PLUS_FREEBETS' : 'SIMPLES_UNIQUEMENT',
+      modeStatsFreebet: dashInclureFreebets ? 'SIMPLES_CASH_PLUS_FREEBETS' : 'SIMPLES_PLUS_COMBINES_CASH',
       kpis: { pnl: dPnl.toFixed(2), roi: dRoi.toFixed(2), roc: dRoc.toFixed(2), winrate: dWinrate.toFixed(1), cote: dCoteMoy.toFixed(2), count: historyStatsGenerales.length, clv: dClvMoy.toFixed(2) },
       kpisJour: { pnl: pnlJour.toFixed(2), roi: roiJour.toFixed(2) },
       kpisSemaine: { pnl: pnlSemaine.toFixed(2), roi: roiSemaine.toFixed(2) },
@@ -1262,6 +1299,8 @@ function App() {
       statsJourSemaine: statsJourSemaine,
       statsScoreHydre: statsScoreHydre,
       nbSansScore: nbSansScore,
+      combosCash: summarizeCombos(historyStats, 'CASH'),
+      combosFreebet: summarizeCombos(historyStats, 'FREEBET'),
       freebetEfficiency: { nbCombines: nbCombinesFreebet, freebetsUtilisees, gains: gainsFreebet, profit: profitFreebet, valeurParEuro: valeurGenereeParEuroFreebet },
       statsTailleFreebet: statsTailleFreebet,
       nbSansTailleFreebet: nbSansTailleFreebet,
@@ -1420,6 +1459,7 @@ function App() {
   if (!estConnecte) {
     return (
       <div style={{ backgroundColor: '#000', height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', color: '#00ffcc', fontFamily: 'monospace' }}>
+        <ServerLoader count={requetesServeur} />
         <h1 style={{ fontSize: '2.5rem', marginBottom: '10px', letterSpacing: '5px' }}>SYSTEME CHÈVRE BLEUE</h1>
         <p style={{ color: '#555', marginBottom: '30px' }}>PROTOCOLE DE SÉCURITÉ ACTIF</p>
         <form onSubmit={verifierMotDePasse} style={{ display: 'flex', flexDirection: 'column', gap: '15px', width: '300px' }}>
@@ -1434,6 +1474,7 @@ function App() {
   if (!finances.initialise) {
     return (
       <div style={{ backgroundColor: '#121212', color: '#fff', minHeight: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
+        <ServerLoader count={requetesServeur} />
         <h1 style={{ color: '#00ffcc' }}>🏦 INITIALISATION BASE DE DONNEES</h1>
         <div style={{ display: 'flex', gap: '10px' }}><input type="number" value={inputCapital} onChange={e => setInputCapital(e.target.value)} style={{ padding: '15px' }} /><button onClick={initialiserBankroll} disabled={estViewer} style={{ padding: '15px', backgroundColor: estViewer ? '#333' : '#00ffcc', cursor: estViewer ? 'not-allowed' : 'pointer' }}>VERROUILLER</button></div>
       </div>
@@ -1443,6 +1484,7 @@ function App() {
   return (
     <div style={{ backgroundColor: '#121212', color: '#ffffff', minHeight: '100vh', padding: '20px', fontFamily: 'monospace' }}>
 
+      <ServerLoader count={requetesServeur} />
       {/* HEADER SUPÉRIEUR */}
       <div style={{ display: 'flex', gap: '20px', marginBottom: '30px' }}>
         <div style={{ flex: 1, display: 'flex', justifyContent: 'space-around', backgroundColor: '#1a1a1a', padding: '15px', borderRadius: '8px', border: '1px solid #333', borderBottom: '3px solid #00ffcc', boxShadow: '0 4px 15px rgba(0,255,204,0.05)' }}>
@@ -1793,8 +1835,8 @@ function App() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '15px', borderLeft: '1px solid #444', paddingLeft: '15px' }}><span style={{ color: '#888' }}>Ligue :</span><select value={dashFiltreLigue} onChange={e => setDashFiltreLigue(e.target.value)} style={{...dateInputStyle, border: '1px solid #ffcc00', color: '#ffcc00'}}><option value="">🌍 Toutes les Ligues</option>{dashCalculs.liguesDisponibles && dashCalculs.liguesDisponibles.map(l => (<option key={l} value={l}>{l}</option>))}</select></div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', borderLeft: '1px solid #444', paddingLeft: '15px' }}>
               <span style={{ color: '#888' }}>Stats :</span>
-              <button onClick={() => setDashInclureFreebets(false)} style={!dashInclureFreebets ? { ...tabActive, padding: '8px 14px' } : { ...tabInactive, padding: '8px 14px' }}>🎯 Simples uniquement</button>
-              <button onClick={() => setDashInclureFreebets(true)} style={dashInclureFreebets ? { ...tabActive, padding: '8px 14px', backgroundColor: '#cc66ff' } : { ...tabInactive, padding: '8px 14px' }}>🎯🎁 Simples + Freebets</button>
+              <button onClick={() => setDashInclureFreebets(false)} style={!dashInclureFreebets ? { ...tabActive, padding: '8px 14px' } : { ...tabInactive, padding: '8px 14px' }}>🎯 Simples + combinés Cash</button>
+              <button onClick={() => setDashInclureFreebets(true)} style={dashInclureFreebets ? { ...tabActive, padding: '8px 14px', backgroundColor: '#cc66ff' } : { ...tabInactive, padding: '8px 14px' }}>🎯🎁 Inclure les combinés Freebet</button>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '15px', borderLeft: '1px solid #444', paddingLeft: '15px' }}>
               <button onClick={copierRapportDashboardPourIA} style={{ padding: '10px 15px', backgroundColor: '#00ffcc', color: '#000', fontWeight: 'bold', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>📋 COPIER POUR L'IA</button>
@@ -1805,7 +1847,7 @@ function App() {
           <div style={{ fontSize: '0.8rem', color: dashInclureFreebets ? '#cc66ff' : '#888', marginBottom: '10px' }}>
             {dashInclureFreebets
               ? '🎁 Les KPI ci-dessous incluent les combinés Freebet.'
-              : '🎯 Les KPI ci-dessous ne portent que sur les paris simples (combinés Freebet exclus).'}
+              : '🎯 Les KPI ci-dessous portent sur les paris simples et les combinés Cash (combinés Freebet exclus).'}
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4 mb-8">
@@ -2149,126 +2191,8 @@ function App() {
             </details>
           </div>
 
-          {/* 🆕 V2.1 §5/§6/§7/§8/§9 : zone FREEBET — séparée visuellement, combinés uniquement (jamais les simples,
-              déjà comptés dans les KPI généraux). Statut des freebets = logique déjà existante (ANNULÉ exclu en amont
-              comme pour tout le Dashboard ; GAGNÉ/PERDU/CASHOUT déjà les seuls résultats définitifs pris en compte). */}
-          {dashCalculs.freebetEfficiency.nbCombines > 0 && (
-          <div style={{ marginBottom: '30px', padding: '20px', borderRadius: '10px', border: '1px solid #ff4444', backgroundColor: 'rgba(255,68,68,0.03)' }}>
-            <h3 style={{ color: '#ff4444', marginTop: 0, marginBottom: '20px' }}>🎁 COMBINÉS FREEBET</h3>
-
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-3">
-              <div style={kpiCard}><div style={kpiLabel}>COMBINÉS JOUÉS</div><div style={{...kpiValue, color:'#fff'}}>{dashCalculs.freebetEfficiency.nbCombines}</div></div>
-              <div style={kpiCard}><div style={kpiLabel}>FREEBETS UTILISÉES</div><div style={{...kpiValue, color:'#fff'}}>{dashCalculs.freebetEfficiency.freebetsUtilisees.toFixed(2)} €</div></div>
-              <div style={kpiCard}><div style={kpiLabel}>GAINS GÉNÉRÉS</div><div style={{...kpiValue, color:'#00ffcc'}}>{dashCalculs.freebetEfficiency.gains.toFixed(2)} €</div></div>
-              <div style={kpiCard}><div style={kpiLabel}>PROFIT GÉNÉRÉ</div><div style={kpiValue}><Colorize val={dashCalculs.freebetEfficiency.profit.toFixed(2)} isCurrency={true}/></div></div>
-              <div style={{...kpiCard, border: '1px solid #ff4444'}}><div style={{...kpiLabel, color:'#ff4444'}}>VALEUR / € DE FREEBET</div><div style={{...kpiValue, color:'#ff4444'}}>{dashCalculs.freebetEfficiency.valeurParEuro !== null ? `${dashCalculs.freebetEfficiency.valeurParEuro.toFixed(2)} €` : '-'}</div></div>
-            </div>
-            <div style={{ color: '#666', fontSize: '0.7rem', marginBottom: '20px' }}>Valeur générée par € de freebet = gains générés ÷ freebets utilisées.</div>
-
-          {/* 🆕 §16/§17 : intégration compacte des combinés Freebet — pas de dashboard dupliqué,
-              juste une distinction simples/combinés + une répartition par taille de combiné. */}
-          {(dashCalculs.statsTypePari?.COMBINE?.count > 0) && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-10">
-              <div style={{ backgroundColor: '#1a1a1a', padding: '20px', borderRadius: '8px', border: '1px solid #333' }}>
-                <h3 style={{ color: '#aaa', marginTop: 0, borderBottom: '1px solid #333', paddingBottom: '10px' }}>🎫 SIMPLES vs COMBINÉS</h3>
-                <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', color: '#ccc', fontSize: '0.9rem' }}>
-                  <thead><tr style={{ color: '#888', borderBottom: '1px solid #444' }}><th style={{padding:'10px'}}>Type</th><th style={{padding:'10px'}}>Vol</th><th style={{padding:'10px'}}>Winrate</th><th style={{padding:'10px'}}>PnL</th><th style={{padding:'10px'}}>ROI</th></tr></thead>
-                  <tbody>
-                    {['SIMPLE', 'COMBINE'].map(t => {
-                      const d = dashCalculs.statsTypePari[t];
-                      return (
-                        <tr key={t} style={{ borderBottom: '1px solid #222' }}>
-                          <td style={{padding:'10px', fontWeight:'bold', color:'#fff'}}>{t === 'SIMPLE' ? '💶 Simples' : '🎫 Combinés'}</td>
-                          <td style={{padding:'10px'}}>{d.count}</td>
-                          <td style={{padding:'10px', color:'#ffcc00'}}>{d.WinRate}%</td>
-                          <td style={{padding:'10px'}}><Colorize val={d.pnl.toFixed(2)} isCurrency={true}/></td>
-                          <td style={{padding:'10px'}}><Colorize val={d.ROI}/>%</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              <div style={{ backgroundColor: '#1a1a1a', padding: '20px', borderRadius: '8px', border: '1px solid #333' }}>
-                <h3 style={{ color: '#aaa', marginTop: 0, borderBottom: '1px solid #333', paddingBottom: '10px' }}>📐 PERFORMANCE PAR TAILLE DE COMBINÉ</h3>
-                <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', color: '#ccc', fontSize: '0.9rem' }}>
-                  <thead><tr style={{ color: '#888', borderBottom: '1px solid #444' }}><th style={{padding:'10px'}}>Taille</th><th style={{padding:'10px'}}>Vol</th><th style={{padding:'10px'}}>Gagnants</th><th style={{padding:'10px'}}>PnL</th><th style={{padding:'10px'}}>ROI</th></tr></thead>
-                  <tbody>
-                    {Object.keys(dashCalculs.statsTailleCombine).sort((a, b) => Number(a) - Number(b)).map(t => {
-                      const d = dashCalculs.statsTailleCombine[t];
-                      return (
-                        <tr key={t} style={{ borderBottom: '1px solid #222' }}>
-                          <td style={{padding:'10px', fontWeight:'bold', color:'#fff'}}>x{t}</td>
-                          <td style={{padding:'10px'}}>{d.count}</td>
-                          <td style={{padding:'10px', color:'#ffcc00'}}>{d.wins} ({d.WinRate}%)</td>
-                          <td style={{padding:'10px'}}><Colorize val={d.pnl.toFixed(2)} isCurrency={true}/></td>
-                          <td style={{padding:'10px'}}><Colorize val={d.ROI}/>%</td>
-                        </tr>
-                      );
-                    })}
-                    {Object.keys(dashCalculs.statsTailleCombine).length === 0 && (
-                      <tr><td colSpan="5" style={{textAlign:'center', padding:'20px', color:'#555'}}>Aucun combiné réglé.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-            {/* 🆕 V2.1 §7 : Performance par taille de combiné Freebet, bucketée 2/3/4/5+ (comparaison des "poches"). */}
-            <div style={{ backgroundColor: '#1a1a1a', padding: '20px', borderRadius: '8px', border: '1px solid #333', marginBottom: '20px' }}>
-              <h4 style={{ color: '#aaa', marginTop: 0, borderBottom: '1px solid #333', paddingBottom: '10px' }}>📐 PERFORMANCE PAR TAILLE (2 / 3 / 4 / 5+)</h4>
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', color: '#ccc', fontSize: '0.9rem' }}>
-                  <thead><tr style={{ color: '#888', borderBottom: '1px solid #444' }}><th style={{padding:'10px'}}>Taille</th><th style={{padding:'10px'}}>Nb combinés</th><th style={{padding:'10px'}}>Freebets utilisées</th><th style={{padding:'10px'}}>Gains</th><th style={{padding:'10px'}}>Profit</th><th style={{padding:'10px'}}>ROI</th></tr></thead>
-                  <tbody>
-                    {Object.keys(dashCalculs.statsTailleFreebet).map(t => {
-                      const d = dashCalculs.statsTailleFreebet[t];
-                      return (<tr key={t} style={{ borderBottom: '1px solid #222' }}>
-                        <td style={{padding:'10px', fontWeight:'bold', color:'#fff'}}>{t}</td>
-                        <td style={{padding:'10px'}}>{d.count}</td>
-                        <td style={{padding:'10px'}}>{d.count > 0 ? `${d.mise.toFixed(2)} €` : '-'}</td>
-                        <td style={{padding:'10px'}}>{d.count > 0 ? `${d.retour.toFixed(2)} €` : '-'}</td>
-                        <td style={{padding:'10px'}}>{d.count > 0 ? <Colorize val={d.pnl.toFixed(2)} isCurrency={true}/> : '-'}</td>
-                        <td style={{padding:'10px'}}>{d.count > 0 ? (<><Colorize val={d.ROI}/>%</>) : '-'}</td>
-                      </tr>);
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              {dashCalculs.nbSansTailleFreebet > 0 && <div style={{color:'#555', fontSize:'0.7rem', marginTop:'10px'}}>{dashCalculs.nbSansTailleFreebet} combiné(s) sans taille enregistrée, exclu(s) de ce tableau.</div>}
-            </div>
-
-            {/* 🆕 V2.1 §8 : indicateurs de sélection déjà stockés pour chaque combiné (Freebet Optimizer) — jamais recalculés. */}
-            <details style={{ backgroundColor: '#1a1a1a', borderRadius: '8px', border: '1px solid #333' }}>
-              <summary style={{ padding: '15px', cursor: 'pointer', color: '#aaa', fontWeight: 'bold' }}>📋 Détail des combinés Freebet ({dashCalculs.detailCombinesFreebet.length})</summary>
-              <div style={{ padding: '0 20px 20px 20px', overflowX: 'auto' }}>
-                <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', color: '#ccc', fontSize: '0.85rem' }}>
-                  <thead><tr style={{ color: '#888', borderBottom: '1px solid #444' }}><th style={{padding:'8px'}}>Date</th><th style={{padding:'8px'}}>Taille</th><th style={{padding:'8px'}}>Cote totale</th><th style={{padding:'8px'}}>Score</th><th style={{padding:'8px'}}>Risque</th><th style={{padding:'8px'}}>Proba</th><th style={{padding:'8px'}}>Edge</th><th style={{padding:'8px'}}>Résultat</th><th style={{padding:'8px'}}>PnL</th></tr></thead>
-                  <tbody>
-                    {dashCalculs.detailCombinesFreebet.map(c => (
-                      <tr key={c.id} style={{ borderBottom: '1px solid #222' }}>
-                        <td style={{padding:'8px'}}>{c.date}</td>
-                        <td style={{padding:'8px'}}>{c.taille ? `x${c.taille}` : '-'}</td>
-                        <td style={{padding:'8px'}}>{c.coteReelle || '-'}</td>
-                        <td style={{padding:'8px'}}>{c.score !== null && c.score !== undefined ? c.score : '-'}</td>
-                        <td style={{padding:'8px'}}>{c.risque || '-'}</td>
-                        <td style={{padding:'8px'}}>{c.proba !== null && c.proba !== undefined ? `${c.proba}%` : '-'}</td>
-                        <td style={{padding:'8px'}}>{c.edge !== null && c.edge !== undefined ? `${c.edge}%` : '-'}</td>
-                        <td style={{padding:'8px', color: c.resultat === 'GAGNE' ? '#00ffcc' : (c.resultat === 'PERDU' ? '#ff4444' : '#ffcc00')}}>{c.resultat}</td>
-                        <td style={{padding:'8px'}}><Colorize val={c.pnl.toFixed(2)} isCurrency={true}/></td>
-                      </tr>
-                    ))}
-                    {dashCalculs.detailCombinesFreebet.length === 0 && (
-                      <tr><td colSpan="9" style={{textAlign:'center', padding:'20px', color:'#555'}}>Aucun combiné sur cette période.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </details>
-          </div>
-          )}
+          <ComboDashboard type="CASH" stats={dashCalculs.combosCash} />
+          <ComboDashboard type="FREEBET" stats={dashCalculs.combosFreebet} />
 
           <div style={{ backgroundColor: '#1a1a1a', padding: '20px', borderRadius: '8px', border: '1px solid #333' }}>
             <h3 style={{ color: '#aaa', marginTop: 0 }}>📝 REGISTRE DES TRANSACTIONS</h3>
@@ -2340,7 +2264,7 @@ function App() {
             <button style={activeTab === 'A_REMPLIR' ? tabActive : tabInactive} onClick={() => changerOngletTrading('A_REMPLIR')}>🎯 À RENSEIGNER ({nbARemplir})</button>
             <button style={activeTab === 'ANALYSE' ? tabActive : tabInactive} onClick={() => changerOngletTrading('ANALYSE')}>🔬 PRÊT / ANALYSÉ ({nbAnalyse})</button>
             <button style={activeTab === 'JOUE' ? tabActive : tabInactive} onClick={() => changerOngletTrading('JOUE')}>💰 PARIS JOUÉS ({nbJoue})</button>
-            <button style={activeTab === 'FREEBET' ? tabActive : tabInactive} onClick={() => changerOngletTrading('FREEBET')}>🎁 FREEBET OPTIMIZER</button>
+            <button style={activeTab === 'FREEBET' ? tabActive : tabInactive} onClick={() => changerOngletTrading('FREEBET')}>🎫 COMBINÉS CASH / FREEBET</button>
           </div>
 
           {activeTab !== 'ANALYSE' && activeTab !== 'FREEBET' && (
@@ -2593,7 +2517,7 @@ function App() {
                         <span style={{ color: '#666', fontSize: '0.75rem', minWidth: '85px' }}>📅 {match.date.split(' ')[0]}{match.date.split(' ')[0] === todayStr ? ' (Auj.)' : match.date.split(' ')[0] === tomorrowStr ? ' (Dem.)' : ''}</span>
                         <span style={{ color: estPerime ? '#ffcc00' : '#888', minWidth: '55px' }}>🕒 {ajusterHeure(match.time || match.date.split(' ')[1])}</span>
                         <span style={{ color: '#ffcc00', minWidth: '45px' }}>{m.div}</span>
-                        <span style={{ fontWeight: 'bold', fontSize: '1rem', flex: 1, minWidth: '200px' }}>{match.home_team} - {match.away_team}{estPerime && ' ⚠️'}</span>
+                        <span style={{ fontWeight: 'bold', fontSize: '1rem', flex: 1, minWidth: '200px' }}>{match.home_team} - {match.away_team}{estPerime && ' ⚠️'}<DivisionWarnings match={match} /></span>
                         {m.issue && <span style={{ color: '#fff', fontSize: '0.85rem', minWidth: '140px' }}>{ISSUE_LABELS[m.issue]} @ {m.cote}</span>}
                         {m.statut !== 'NON_CONFORME' && (
                           <>
@@ -2629,7 +2553,7 @@ function App() {
                 <div style={{ color: '#888' }}>
                   🎯 <span style={{ color: '#ffcc00', fontWeight: 'bold' }}>{freebetCandidats.length}</span> match(s) éligible(s) aujourd'hui (Sélectionné/Potable, non commencé)
                   {' '}— Bankroll CASH (réf. Kelly) : <span style={{ color: '#00ffcc' }}>{finances.total.toFixed(2)} €</span>
-                  {' '}— Freebets dispo : <span style={{ color: '#ff4444' }}>{finances.freebets.disponible.toFixed(2)} €</span>
+                  {' '}— Cash dispo : <span style={{ color: '#00ffcc' }}>{finances.disponible.toFixed(2)} €</span>{' '}— Freebets dispo : <span style={{ color: '#ff4444' }}>{finances.freebets.disponible.toFixed(2)} €</span>
                 </div>
                 <button onClick={chargerFreebetCandidats} style={{ padding: '8px 14px', backgroundColor: '#333', color: '#00ffcc', border: '1px solid #00ffcc', borderRadius: '4px', cursor: 'pointer' }}>🔄 Rafraîchir</button>
               </div>
@@ -2722,6 +2646,7 @@ function App() {
                 return (
                   <>
                     <div style={{ backgroundColor: '#1a1a1a', padding: '15px 20px', borderRadius: '8px', border: '1px solid #cc66ff55', marginBottom: '20px' }}>
+                      <p style={{ color: '#aaa', fontSize: '0.85rem' }}>Portefeuille commun CASH / FREEBET. Les indicateurs de conversion ci-dessous utilisent la référence Freebet ; le financement est choisi à la validation de chaque ticket.</p>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '10px' }}>
                         <div style={{ color: '#cc66ff', fontWeight: 'bold' }}>🧺 COMPOSITION DU PORTEFEUILLE RECOMMANDÉ</div>
                         <div style={{ display: 'flex', gap: '15px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -2736,7 +2661,7 @@ function App() {
                       <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap' }}>
                         <div style={{ ...kpiCard, flex: '1 1 140px' }}><div style={kpiLabel}>TICKETS</div><div style={kpiValue}>{divDetail.nb_tickets || 0}</div></div>
                         <div style={{ ...kpiCard, flex: '1 1 140px', border: '1px solid #cc66ff' }}><div style={{...kpiLabel, color:'#cc66ff'}}>SCORE PORTEFEUILLE</div><div style={{ ...kpiValue, color: '#cc66ff' }}>{sp.score_global != null ? sp.score_global : '-'}</div></div>
-                        <div style={{ ...kpiCard, flex: '1 1 140px' }}><div style={kpiLabel}>MISE ENGAGÉE / DISPONIBLE</div><div style={{ ...kpiValue, color: '#00ffcc', fontSize: '1.1rem' }}>{pf.mise_totale_recommandee_portefeuille.toFixed(2)} € <span style={{fontSize:'0.7rem', color:'#888'}}>/ {pf.budget_freebet_disponible.toFixed(2)} €</span></div></div>
+                        <div style={{ ...kpiCard, flex: '1 1 140px' }}><div style={kpiLabel}>MISE PROPOSÉE / BUDGET</div><div style={{ ...kpiValue, color: '#00ffcc', fontSize: '1.1rem' }}>{pf.mise_totale_recommandee_portefeuille.toFixed(2)} € <span style={{fontSize:'0.7rem', color:'#888'}}>/ {(pf.budget_tickets_disponible ?? pf.budget_freebet_disponible).toFixed(2)} €</span></div></div>
                         <div style={{ ...kpiCard, flex: '1 1 140px' }}><div style={kpiLabel}>EV TOTAL</div><div style={{ ...kpiValue }}><Colorize val={dist.ev} /> €</div></div>
                         <div style={{ ...kpiCard, flex: '1 1 140px' }}><div style={kpiLabel}>EV / € ENGAGÉ</div><div style={{ ...kpiValue }}><Colorize val={dist.ev_par_euro_engage} /></div></div>
                         <div style={{ ...kpiCard, flex: '1 1 140px' }}><div style={kpiLabel}>P(GAIN &gt; 0)</div><div style={{ ...kpiValue, color: '#00ffcc' }}>{dist.proba_gain_positif_pct != null ? `${dist.proba_gain_positif_pct}%` : '-'}</div></div>
@@ -2820,7 +2745,7 @@ function App() {
                     )}
 
                     {pf.portefeuille_recommande.length === 0 && (
-                      <div style={{ textAlign: 'center', padding: '30px', color: '#666' }}>Aucun combiné disponible pour construire un portefeuille avec les tailles choisies (ou budget freebet insuffisant).</div>
+                      <div style={{ textAlign: 'center', padding: '30px', color: '#666' }}>Aucun combiné disponible pour construire un portefeuille avec les tailles choisies (ou budget disponible insuffisant).</div>
                     )}
                     {pf.portefeuille_recommande.length > 0 && listeComboAffichee.length === 0 && (
                       <div style={{ textAlign: 'center', padding: '30px', color: '#666' }}>Aucun combiné dans cette catégorie de statut.</div>
@@ -2858,7 +2783,7 @@ function App() {
                                 <thead><tr><th style={thStyle}>Match</th><th>Issue</th><th>Cote</th><th>Proba</th><th>Edge</th><th>Score</th></tr></thead>
                                 <tbody>
                                   {combo.selections.map(s => (
-                                    <tr key={s.id}><td style={{ textAlign: 'left', padding: '8px 5px' }}>{s.home_team} - {s.away_team} <span style={{ color: '#888' }}>({s.div})</span></td><td>{s.issue_label}</td><td>{s.cote}</td><td>{s.proba}%</td><td><Colorize val={s.edge} />%</td><td>{s.score}</td></tr>
+                                    <tr key={s.id}><td style={{ textAlign: 'left', padding: '8px 5px' }}>{s.home_team} - {s.away_team}<DivisionWarnings match={s} /> <span style={{ color: '#888' }}>({s.div})</span></td><td>{s.issue_label}</td><td>{s.cote}</td><td>{s.proba}%</td><td><Colorize val={s.edge} />%</td><td>{s.score}</td></tr>
                                   ))}
                                 </tbody>
                               </table>
@@ -2867,7 +2792,7 @@ function App() {
                                 <div style={{ ...kpiCard, flex: '1 1 130px' }}><div style={kpiLabel}>COTE TOTALE</div><div style={kpiValue}>{combo.cote_totale}</div></div>
                                 <div style={{ ...kpiCard, flex: '1 1 130px' }}><div style={kpiLabel}>PROBABILITÉ</div><div style={{ ...kpiValue, fontSize: '1.3rem' }}>{combo.probabilite_pct}%</div></div>
                                 <div style={{ ...kpiCard, flex: '1 1 130px' }}><div style={kpiLabel}>EDGE</div><div style={{ ...kpiValue, fontSize: '1.3rem' }}><Colorize val={combo.edge_pct} />%</div></div>
-                                <div style={{ ...kpiCard, flex: '1 1 130px' }}><div style={kpiLabel}>EV (pour 1€)</div><div style={{ ...kpiValue, fontSize: '1.3rem' }}><Colorize val={combo.ev_pour_1e} /></div></div>
+                                <div style={{ ...kpiCard, flex: '1 1 130px' }}><div style={kpiLabel}>CONVERSION FREEBET / 1€</div><div style={{ ...kpiValue, fontSize: '1.3rem' }}><Colorize val={combo.ev_pour_1e} /></div></div>
                                 <div style={{ ...kpiCard, flex: '1 1 130px' }}><div style={kpiLabel}>MISE PRÉVUE</div><div style={{ ...kpiValue, fontSize: '1.3rem', color: '#00ffcc' }}>{combo.mise_prevue_portefeuille.toFixed(2)} €</div></div>
                               </div>
 
@@ -2914,7 +2839,7 @@ function App() {
                               border: selectionne ? '1px solid #ffcc00' : '1px solid #333',
                               fontWeight: selectionne ? 'bold' : 'normal'
                             }}>
-                            {selectionne ? '✅ ' : ''}{c.home_team} - {c.away_team} ({c.issue_label}) · {c.cote}
+                            {selectionne ? '✅ ' : ''}{c.home_team} - {c.away_team} ({c.issue_label}) · {c.cote}<DivisionWarnings match={c} />
                           </button>
                         );
                       })}
@@ -2946,7 +2871,7 @@ function App() {
                           <thead><tr><th style={thStyle}>Match</th><th>Issue</th><th>Cote</th><th>Proba</th><th>Edge</th><th>Score</th></tr></thead>
                           <tbody>
                             {combo.selections.map(s => (
-                              <tr key={s.id}><td style={{ textAlign: 'left', padding: '8px 5px' }}>{s.home_team} - {s.away_team} <span style={{ color: '#888' }}>({s.div})</span></td><td>{s.issue_label}</td><td>{s.cote}</td><td>{s.proba}%</td><td><Colorize val={s.edge} />%</td><td>{s.score}</td></tr>
+                              <tr key={s.id}><td style={{ textAlign: 'left', padding: '8px 5px' }}>{s.home_team} - {s.away_team}<DivisionWarnings match={s} /> <span style={{ color: '#888' }}>({s.div})</span></td><td>{s.issue_label}</td><td>{s.cote}</td><td>{s.proba}%</td><td><Colorize val={s.edge} />%</td><td>{s.score}</td></tr>
                             ))}
                           </tbody>
                         </table>
@@ -2956,7 +2881,7 @@ function App() {
                           <div style={{ ...kpiCard, flex: '1 1 130px' }}><div style={kpiLabel}>PROBABILITÉ</div><div style={{ ...kpiValue, fontSize: '1.3rem' }}>{combo.probabilite_pct}%</div></div>
                           <div style={{ ...kpiCard, flex: '1 1 130px' }}><div style={kpiLabel}>PROBA IMPLICITE</div><div style={{ ...kpiValue, fontSize: '1.3rem' }}>{combo.probabilite_implicite_pct}%</div></div>
                           <div style={{ ...kpiCard, flex: '1 1 130px' }}><div style={kpiLabel}>EDGE</div><div style={{ ...kpiValue, fontSize: '1.3rem' }}><Colorize val={combo.edge_pct} />%</div></div>
-                          <div style={{ ...kpiCard, flex: '1 1 130px' }}><div style={kpiLabel}>EV (pour 1€)</div><div style={{ ...kpiValue, fontSize: '1.3rem' }}><Colorize val={combo.ev_pour_1e} /></div></div>
+                          <div style={{ ...kpiCard, flex: '1 1 130px' }}><div style={kpiLabel}>CONVERSION FREEBET / 1€</div><div style={{ ...kpiValue, fontSize: '1.3rem' }}><Colorize val={combo.ev_pour_1e} /></div></div>
                           <div style={{ ...kpiCard, flex: '1 1 130px' }}><div style={kpiLabel}>GAIN POTENTIEL (/1€)</div><div style={{ ...kpiValue, fontSize: '1.3rem', color: '#00ffcc' }}>+{combo.gain_potentiel_pour_1e} €</div></div>
                           <div style={{ ...kpiCard, flex: '1 1 130px' }}><div style={kpiLabel}>SCORE</div><div style={{ ...kpiValue, fontSize: '1.3rem', color: '#ffcc00' }}>⭐ {combo.score}</div></div>
                         </div>
@@ -3034,7 +2959,7 @@ function App() {
                                 <thead><tr><th style={thStyle}>Match</th><th>Issue</th><th>Cote</th><th>Proba</th><th>Edge</th><th>Score</th></tr></thead>
                                 <tbody>
                                   {combo.selections.map(s => (
-                                    <tr key={s.id}><td style={{ textAlign: 'left', padding: '8px 5px' }}>{s.home_team} - {s.away_team} <span style={{ color: '#888' }}>({s.div})</span></td><td>{s.issue_label}</td><td>{s.cote}</td><td>{s.proba}%</td><td><Colorize val={s.edge} />%</td><td>{s.score}</td></tr>
+                                    <tr key={s.id}><td style={{ textAlign: 'left', padding: '8px 5px' }}>{s.home_team} - {s.away_team}<DivisionWarnings match={s} /> <span style={{ color: '#888' }}>({s.div})</span></td><td>{s.issue_label}</td><td>{s.cote}</td><td>{s.proba}%</td><td><Colorize val={s.edge} />%</td><td>{s.score}</td></tr>
                                   ))}
                                 </tbody>
                               </table>
@@ -3044,7 +2969,7 @@ function App() {
                                 <div style={{ ...kpiCard, flex: '1 1 130px' }}><div style={kpiLabel}>PROBABILITÉ</div><div style={{ ...kpiValue, fontSize: '1.3rem' }}>{combo.probabilite_pct}%</div></div>
                                 <div style={{ ...kpiCard, flex: '1 1 130px' }}><div style={kpiLabel}>PROBA IMPLICITE</div><div style={{ ...kpiValue, fontSize: '1.3rem' }}>{combo.probabilite_implicite_pct}%</div></div>
                                 <div style={{ ...kpiCard, flex: '1 1 130px' }}><div style={kpiLabel}>EDGE</div><div style={{ ...kpiValue, fontSize: '1.3rem' }}><Colorize val={combo.edge_pct} />%</div></div>
-                                <div style={{ ...kpiCard, flex: '1 1 130px' }}><div style={kpiLabel}>EV (pour 1€)</div><div style={{ ...kpiValue, fontSize: '1.3rem' }}><Colorize val={combo.ev_pour_1e} /></div></div>
+                                <div style={{ ...kpiCard, flex: '1 1 130px' }}><div style={kpiLabel}>CONVERSION FREEBET / 1€</div><div style={{ ...kpiValue, fontSize: '1.3rem' }}><Colorize val={combo.ev_pour_1e} /></div></div>
                                 <div style={{ ...kpiCard, flex: '1 1 130px' }}><div style={kpiLabel}>GAIN POTENTIEL (/1€)</div><div style={{ ...kpiValue, fontSize: '1.3rem', color: '#00ffcc' }}>+{combo.gain_potentiel_pour_1e} €</div></div>
                               </div>
                               <div style={{ color: '#aaa', fontSize: '0.8rem', marginTop: '10px' }}>{combo.profil_description} (indice de profil : {combo.indice_profil})</div>
@@ -3070,7 +2995,14 @@ function App() {
               {freebetComboOuvert && (
                 <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
                   <div style={{ ...resultatStyle, maxWidth: '600px', width: '100%', maxHeight: '85vh', overflowY: 'auto' }}>
-                    <h2 style={{ color: '#00ffcc', borderBottom: '1px solid #333', paddingBottom: '10px' }}>🎁 VALIDATION DU COMBINÉ FREEBET x{freebetComboOuvert.taille}</h2>
+                    <h2 style={{ color: '#00ffcc', borderBottom: '1px solid #333', paddingBottom: '10px' }}>🎫 VALIDATION DU COMBINÉ x{freebetComboOuvert.taille}</h2>
+                    <div style={{ marginBottom: 15 }}>
+                      <label style={lblStyle}>Financement du ticket :</label>
+                      <select aria-label="Financement du combiné" value={comboTypeTicket} onChange={e => setComboTypeTicket(e.target.value)} style={inputStyle}>
+                        <option value="FREEBET">🎁 FREEBET</option><option value="CASH">💶 CASH</option>
+                      </select>
+                      <p style={{ color: '#aaa', fontSize: '0.85rem' }}>Disponible : {(comboTypeTicket === 'CASH' ? finances.disponible : finances.freebets.disponible).toFixed(2)} € · {comboTypeTicket === 'CASH' ? 'Mise récupérée en cas de victoire ; perte maximale = mise. Plafonds de risque CASH appliqués à la validation.' : 'Mise non restituée ; gain net = mise × (cote − 1).'}</p>
+                    </div>
                     <p style={{ color: '#ccc', fontSize: '0.9rem' }}>{freebetComboOuvert.selections.map(s => `${s.home_team} - ${s.away_team} (${s.issue_label})`).join('  +  ')}</p>
 
                     <div style={{ display: 'flex', gap: '15px', marginBottom: '15px', flexWrap: 'wrap' }}>
@@ -3087,7 +3019,7 @@ function App() {
                         })()}
                       </div>
                       <div style={{ flex: 1 }}>
-                        <label style={lblStyle}>Mise Freebet (€) {freebetComboOuvert.kelly.mise_recommandee != null ? `— Kelly conseille ${freebetComboOuvert.kelly.mise_recommandee.toFixed(2)} €` : '— sous le minimum Kelly, saisie libre'} :</label>
+                        <label style={lblStyle}>Mise {comboTypeTicket} (€) {freebetComboOuvert.kelly.mise_recommandee != null ? `— Kelly conseille ${freebetComboOuvert.kelly.mise_recommandee.toFixed(2)} €` : '— sous le minimum Kelly, saisie libre'} :</label>
                         <input type="number" step="0.01" style={inputStyle} value={freebetMise} onChange={e => setFreebetMise(e.target.value)} />
                       </div>
                     </div>
@@ -3113,13 +3045,14 @@ function App() {
             <div style={{ maxWidth: '900px', margin: '0 auto' }}>
               {activeTab === 'JOUE' && combosFreebetEnCours.length > 0 && (
                 <div style={{ marginBottom: '20px' }}>
-                  <h3 style={{ color: '#ffcc00', fontSize: '0.95rem', marginBottom: '10px' }}>🎁 COMBINÉS FREEBET EN COURS</h3>
+                  <h3 style={{ color: '#ffcc00', fontSize: '0.95rem', marginBottom: '10px' }}>🎫 COMBINÉS CASH / FREEBET EN COURS</h3>
                   {combosFreebetEnCours.map(combo => {
                     const risqueColor = combo.niveau_risque === 'FAIBLE' ? '#00ffcc' : combo.niveau_risque === 'MOYEN' ? '#ffcc00' : '#ff4444';
                     return (
                       <div key={combo.id_match} style={{ backgroundColor: '#1e1e1e', marginBottom: '10px', borderRadius: '5px', border: `1px solid ${risqueColor}` }}>
                         <div onClick={() => setComboExpandedId(comboExpandedId === combo.id_match ? null : combo.id_match)} style={{ display: 'flex', justifyContent: 'space-between', padding: '15px', cursor: 'pointer', backgroundColor: comboExpandedId === combo.id_match ? '#2a2a2a' : 'transparent' }}>
-                          <span style={{ color: '#888' }}>🎫 {combo.home_team}</span>
+                          <span style={{ color: '#888' }}>🎫 {combo.home_team} <b style={{ color: comboType(combo) === 'CASH' ? '#00ffcc' : '#ff8844' }}>{comboType(combo)}</b></span>
+                          <span style={{ color: '#ffcc00', fontWeight: 'bold' }}>✅ {comboProgress(combo.selections).valides}/{comboProgress(combo.selections).total} validés / joués</span>
                           <span style={getBookStyle(combo.bookmaker)}>{(combo.bookmaker || 'WINAMAX').substring(0, 4)}</span>
                           <span style={{ fontWeight: 'bold' }}>{combo.mise?.toFixed(2)} € @ {combo.cote_choisie?.toFixed(2)}</span>
                           <span style={{ color: '#00ffcc' }}>{comboExpandedId === combo.id_match ? '▲' : '▼'}</span>
@@ -3127,11 +3060,12 @@ function App() {
                         {comboExpandedId === combo.id_match && (
                           <div style={{ padding: '20px', borderTop: '1px solid #333' }}>
                             <p style={{ color: '#ccc', fontSize: '0.85rem' }}>{combo.away_team}</p>
+                            {combo.selections.map(s => <div key={s.id_match} style={{ padding: '10px', marginBottom: 6, border: `1px solid ${s.valide ? '#00ffcc' : '#555'}`, color: s.valide ? '#00ffcc' : '#aaa' }}>{s.valide ? '✅' : '⏳'} {s.home_team} — {s.away_team} · {s.issue_label} · {s.joue ? 'JOUÉ' : s.valide ? 'VALIDÉ' : 'EN ATTENTE'}<DivisionWarnings match={s} /></div>)}
                             <div style={{ display: 'flex', justifyContent: 'space-between', color: '#ccc', fontSize: '0.95rem', marginBottom: '15px', flexWrap: 'wrap', gap: '10px' }}>
                               <div><b>Bookmaker :</b> <span style={getBookStyle(combo.bookmaker)}>{combo.bookmaker || 'WINAMAX'}</span></div>
-                              <div><b>Mise :</b> {combo.mise?.toFixed(2)} € (FREEBET)</div>
+                              <div><b>Mise :</b> {combo.mise?.toFixed(2)} € ({comboType(combo)})</div>
                               <div><b>Cote :</b> {combo.cote_choisie?.toFixed(2)}</div>
-                              <div><b>Retour potentiel :</b> <span style={{ color: '#00ffcc', fontWeight: 'bold' }}>{((combo.mise * combo.cote_choisie) - combo.mise).toFixed(2)} €</span></div>
+                              <div><b>Retour potentiel :</b> <span style={{ color: '#00ffcc', fontWeight: 'bold' }}>{(combo.mise * (combo.cote_choisie - (comboType(combo) === 'FREEBET' ? 1 : 0))).toFixed(2)} €</span></div>
                             </div>
 
                             {clotureComboEnCours?.id === combo.id_match ? (
@@ -3171,7 +3105,7 @@ function App() {
                   <div key={match.id} style={{ backgroundColor: '#1e1e1e', marginBottom: '10px', borderRadius: '5px', border: estPerime ? '1px solid #ffcc00' : (isMatchAnalysed ? '2px solid #00ffcc' : '1px solid #333') }}>
                     <div onClick={() => setExpandedId(expandedId === match.id ? null : match.id)} style={{ display: 'flex', justifyContent: 'space-between', padding: '15px', cursor: 'pointer', backgroundColor: expandedId === match.id ? '#2a2a2a' : 'transparent' }}>
                         <span style={{ color: '#888' }}>🕒 {ajusterHeure(match.date)} <span style={{color: '#ffcc00', marginLeft:'10px'}}>{match.div}</span></span>
-                        <span style={{ fontWeight: 'bold', fontSize: '1.1rem', color: estPerime ? '#ffcc00' : (isMatchAnalysed ? '#00ffcc' : '#fff') }}>{match.home_team} - {match.away_team} {estPerime && " ⚠️ MAJ REQUISE"}</span>
+                        <span style={{ fontWeight: 'bold', fontSize: '1.1rem', color: estPerime ? '#ffcc00' : (isMatchAnalysed ? '#00ffcc' : '#fff') }}>{match.home_team} - {match.away_team} {estPerime && " ⚠️ MAJ REQUISE"}<DivisionWarnings match={match} /></span>
                         <span style={{ color: '#00ffcc' }}>{expandedId === match.id ? '▲' : '▼'}</span>
                     </div>
 
@@ -3261,6 +3195,14 @@ const getBookStyle = (name) => {
   if (name === 'BETCLIC') return { color: '#fff', border: '1px solid #fff', padding: '2px 5px', borderRadius: '3px', fontSize: '0.7rem' };
   return { color: '#888', border: '1px solid #444', padding: '2px 5px', borderRadius: '3px', fontSize: '0.7rem' };
 };
+
+const ServerLoader = ({ count }) => count > 0 ? <div role="status" aria-live="polite" style={{ position: 'fixed', bottom: 20, right: 20, zIndex: 10000, backgroundColor: '#1a1a1a', border: '2px solid #00ffcc', padding: '16px 24px', borderRadius: 8, boxShadow: '0 4px 24px #000', color: '#00ffcc', fontWeight: 'bold' }}>⏳ Chargement serveur…</div> : null;
+
+const DivisionWarnings = ({ match }) => (match.division_warnings || []).map(w => (
+  <div key={w.team} style={{ backgroundColor: '#442600', border: '2px solid #ffcc00', borderRadius: 4, padding: '8px 10px', marginTop: 6, color: '#ffdd55', fontWeight: 'bold', fontSize: '0.85rem' }} title="Les statistiques glissantes peuvent provenir d'un autre niveau de compétition. Aucun ajustement automatique du score.">
+    ⚠️ {w.sens} — {w.team} : {w.ancienne_division} → {w.nouvelle_division}
+  </div>
+));
 
 // STYLES
 const menuActive = { padding: '15px 30px', backgroundColor: '#00ffcc', color: '#000', fontWeight: 'bold', fontSize: '1.1rem', border: 'none', borderRadius: '5px', cursor: 'pointer' };
